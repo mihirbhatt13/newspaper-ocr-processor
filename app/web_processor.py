@@ -1,8 +1,10 @@
 import io
 import os
+import tempfile
 import hashlib
 from pathlib import Path
 from pypdf import PdfReader
+
 
 from app.config import ConfigManager, find_tesseract, DEFAULT_LANG_MAP
 from app.ocr.ocr_engine import OCREngine
@@ -99,93 +101,144 @@ def inspect_pdf_bytes(pdf_bytes: bytes, filename: str) -> dict:
 def process_pdf_page_bytes(pdf_bytes: bytes, filename: str, page_num: int, lang_setting: str = "Auto", dpi: int = 200) -> dict:
     """Process a single page of a PDF byte stream using True Tesseract OCR or direct text stream fallback.
     
-    If page is scanned/image-based:
+    If page is scanned/image-based or contains sparse metadata (< 150 chars):
     - Renders page image using pypdfium2 (or poppler fallback) into memory.
     - Runs Tesseract OCREngine for requested language.
-    - If Tesseract is missing on server environment, reports explicit OCR engine error.
+    - Returns rich diagnostic metadata (rendered image size, Tesseract path, version, text length).
     """
     title, iso_date = extract_newspaper_info(filename)
 
-    # 1. First check if digital text stream exists on this page
+    # 1. Check if digital text stream exists on this page
     reader = PdfReader(io.BytesIO(pdf_bytes))
-    if 1 <= page_num <= len(reader.pages):
+    page_count = len(reader.pages)
+    if 1 <= page_num <= page_count:
         page = reader.pages[page_num - 1]
         digital_text = (page.extract_text() or "").strip()
     else:
         digital_text = ""
 
-    is_scanned_page = len(digital_text) < 30
+    # A full newspaper page has hundreds/thousands of characters. < 150 chars indicates scanned or header metadata.
+    is_scanned_page = len(digital_text) < 150
+
+    tess_cmd = find_tesseract()
+    tess_version = "Unavailable"
+    if tess_cmd and os.path.exists(tess_cmd):
+        try:
+            import pytesseract
+            pytesseract.pytesseract.tesseract_cmd = tess_cmd
+            tess_version = str(pytesseract.get_tesseract_version())
+        except Exception:
+            tess_version = "Unknown"
 
     if not is_scanned_page:
-        # Digital PDF with embedded text stream
+        # Digital PDF with rich embedded text stream
         return {
             "success": True,
             "filename": filename,
             "page_num": page_num,
+            "page_count": page_count,
             "text": digital_text,
+            "text_length": len(digital_text),
+            "preview_snippet": digital_text[:200],
             "is_scanned": False,
             "engine_used": "PDF Text Stream",
-            "language": lang_setting
+            "language": lang_setting,
+            "img_dims": "N/A (Text Stream)",
+            "tess_path": tess_cmd or "N/A",
+            "tess_version": tess_version
         }
 
-    # 2. Page is scanned/image-based -> Requires True OCR!
-    tess_cmd = find_tesseract()
+    # 2. Page is scanned/image-based or sparse -> Requires True OCR!
     if not tess_cmd or not os.path.exists(tess_cmd):
-        # Tesseract binary is NOT available on server
         return {
             "success": False,
             "filename": filename,
             "page_num": page_num,
-            "text": "",
+            "page_count": page_count,
+            "text": digital_text,
+            "text_length": len(digital_text),
+            "preview_snippet": digital_text[:200],
             "is_scanned": True,
             "ocr_error": "TESSERACT_UNAVAILABLE",
-            "message": "Tesseract OCR binary is unavailable on the server environment. Scanned newspaper pages require Tesseract to extract text."
+            "message": "Tesseract OCR binary is unavailable on the server environment. Scanned newspaper pages require Tesseract to extract text.",
+            "img_dims": "N/A",
+            "tess_path": "None",
+            "tess_version": "None"
         }
 
-    # Render single page to PIL Image in memory
+    # Render single page to PIL Image in memory using a safe temporary file
+    temp_pdf_path = None
     try:
-        # Save temp PDF file for pypdfium2 rendering
-        temp_pdf = Path(os.environ.get("TMP", "/tmp")) / f"temp_{os.getpid()}_{page_num}.pdf"
-        temp_pdf.write_bytes(pdf_bytes)
-        try:
-            pil_img = render_pdf_page_to_image(str(temp_pdf), page_num=page_num, dpi=dpi)
-        finally:
-            if temp_pdf.exists():
-                temp_pdf.unlink()
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+            tf.write(pdf_bytes)
+            temp_pdf_path = tf.name
+        
+        pil_img = render_pdf_page_to_image(temp_pdf_path, page_num=page_num, dpi=dpi)
     except Exception as e:
         return {
             "success": False,
             "filename": filename,
             "page_num": page_num,
+            "page_count": page_count,
             "text": "",
+            "text_length": 0,
+            "preview_snippet": "",
             "is_scanned": True,
             "ocr_error": "RENDER_ERROR",
-            "message": f"Failed to render PDF page image for OCR: {e}"
+            "message": f"Failed to render PDF page image for OCR: {e}",
+            "img_dims": "N/A",
+            "tess_path": tess_cmd,
+            "tess_version": tess_version
         }
+    finally:
+        if temp_pdf_path and os.path.exists(temp_pdf_path):
+            try:
+                os.unlink(temp_pdf_path)
+            except Exception:
+                pass
+
+    img_dims_str = f"{pil_img.width}x{pil_img.height}"
 
     # Perform True OCR via OCREngine
     engine = OCREngine(tesseract_cmd=tess_cmd)
     try:
-        ocr_text = engine.perform_ocr(pil_img, lang_setting=lang_setting)
+        ocr_text = engine.perform_ocr(pil_img, lang_setting=lang_setting).strip()
+        
+        # If OCR yields meaningful text or if digital_text was empty/sparse, use OCR result
+        final_text = ocr_text if (len(ocr_text) > len(digital_text) or len(ocr_text) >= 10) else digital_text
+
         return {
             "success": True,
             "filename": filename,
             "page_num": page_num,
-            "text": ocr_text,
+            "page_count": page_count,
+            "text": final_text,
+            "text_length": len(final_text),
+            "preview_snippet": final_text[:200],
             "is_scanned": True,
             "engine_used": "Tesseract OCR",
-            "language": lang_setting
+            "language": lang_setting,
+            "img_dims": img_dims_str,
+            "tess_path": tess_cmd,
+            "tess_version": tess_version
         }
     except Exception as e:
         return {
             "success": False,
             "filename": filename,
             "page_num": page_num,
-            "text": "",
+            "page_count": page_count,
+            "text": digital_text,
+            "text_length": len(digital_text),
+            "preview_snippet": digital_text[:200],
             "is_scanned": True,
             "ocr_error": "OCR_EXECUTION_ERROR",
-            "message": f"Tesseract OCR execution error: {e}"
+            "message": f"Tesseract OCR execution error: {e}",
+            "img_dims": img_dims_str,
+            "tess_path": tess_cmd,
+            "tess_version": tess_version
         }
+
 
 def combine_texts_batch(items: list) -> str:
     """Combine extracted texts into a single structured output string matching TextCombiner."""

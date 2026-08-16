@@ -216,6 +216,7 @@ if uploaded_files:
                 full_file_text = ""
                 has_error = False
                 err_msg = ""
+                file_diag = []
 
                 for p_num in range(1, page_count + 1):
                     pbar_pdf.progress(int((p_num / page_count) * 100), text=f"File {f_idx + 1}: `{filename}` - Page {p_num} / {page_count}")
@@ -230,6 +231,16 @@ if uploaded_files:
 
                     if res_p["success"]:
                         full_file_text += f"\n--- PAGE {p_num} ---\n" + res_p["text"]
+                        file_diag.append({
+                            "Page": p_num,
+                            "Engine": res_p.get("engine_used", "N/A"),
+                            "Image Size": res_p.get("img_dims", "N/A"),
+                            "Selected Lang": res_p.get("language", "Auto"),
+                            "Tesseract Path": res_p.get("tess_path", "N/A"),
+                            "Tesseract Ver": res_p.get("tess_version", "N/A"),
+                            "Chars Extracted": res_p.get("text_length", 0),
+                            "Preview Snippet": res_p.get("preview_snippet", "")[:100]
+                        })
                     else:
                         has_error = True
                         err_msg = res_p.get("message", "OCR Error")
@@ -244,7 +255,8 @@ if uploaded_files:
                     file_info["extracted_text"] = full_file_text.strip()
                     st.session_state.processed_results.append({
                         "filename": filename,
-                        "text": file_info["extracted_text"]
+                        "text": file_info["extracted_text"],
+                        "diagnostics": file_diag
                     })
                 else:
                     file_info["extracted_text"] = f"[ERROR]: {err_msg}"
@@ -298,8 +310,13 @@ if uploaded_files:
         st.subheader("4. Extracted Text Results & Export")
         
         for item in st.session_state.processed_results:
-            with st.expander(f"📄 {item['filename']} (Extracted Text Preview)"):
+            with st.expander(f"📄 {item['filename']} (Extracted Text Preview - {len(item['text'])} Chars)", expanded=True):
                 st.text_area("Extracted Text", value=item["text"], height=250, key=f"txt_{item['filename']}")
+                
+                if item.get("diagnostics"):
+                    with st.expander("🔍 OCR Pipeline Diagnostic Details"):
+                        st.dataframe(item["diagnostics"], use_container_width=True)
+
                 st.download_button(
                     label=f"💾 Download {item['filename']}.txt",
                     data=item["text"],
@@ -307,6 +324,7 @@ if uploaded_files:
                     mime="text/plain",
                     key=f"dl_{item['filename']}"
                 )
+
 
     # Render Aggregate Combined Text Output
     if st.session_state.combined_output:

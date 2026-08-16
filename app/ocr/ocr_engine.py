@@ -61,13 +61,32 @@ class OCREngine:
             missing_str = ", ".join([f"'{m}.traineddata'" for m in missing])
             raise ValueError(f"Required Tesseract language pack(s) missing: {missing_str}")
 
+        # Preprocess PIL image for optimal newsprint OCR
+        try:
+            from PIL import ImageOps
+            if pil_image.mode != "L":
+                ocr_image = pil_image.convert("L")
+            else:
+                ocr_image = pil_image
+            ocr_image = ImageOps.autocontrast(ocr_image)
+        except Exception:
+            ocr_image = pil_image
+
         # Save image to explicit temporary PNG file to avoid pytesseract's un-retried cleanup [WinError 32]
         temp_img_fd, temp_img_path = tempfile.mkstemp(suffix=".png")
         try:
             os.close(temp_img_fd)
-            pil_image.save(temp_img_path, format="PNG")
+            ocr_image.save(temp_img_path, format="PNG")
             text = pytesseract.image_to_string(temp_img_path, lang=lang_code, config=extra_config)
+            
+            # Fallback to single text block mode (--psm 6) if automatic segmentation (--psm 3) returns sparse text
+            if len(text.strip()) < 20 and extra_config == "--psm 3":
+                fallback_text = pytesseract.image_to_string(temp_img_path, lang=lang_code, config="--psm 6")
+                if len(fallback_text.strip()) > len(text.strip()):
+                    text = fallback_text
+
             return text
         finally:
             safe_remove_file(temp_img_path)
+
 
