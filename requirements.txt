@@ -4,8 +4,11 @@ Pillow>=9.0.0
 psutil>=5.9.0
 fpdf2>=2.7.0
 flask>=3.0.0
-pypdf>=3.0.0
+pypdf>=5.0.0
 pypdfium2>=4.0.0
 gunicorn>=21.2.0
+streamlit>=1.30.0
+
+
 
 

@@ -1,0 +1,9 @@
+tesseract-ocr
+tesseract-ocr-eng
+tesseract-ocr-hin
+tesseract-ocr-guj
+tesseract-ocr-mar
+tesseract-ocr-ben
+tesseract-ocr-tel
+tesseract-ocr-urd
+libgl1-mesa-glx
