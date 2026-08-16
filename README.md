@@ -1,83 +1,75 @@
 # Newspaper OCR Processor
 
-A reliable, high-performance Windows desktop GUI application to process batch newspaper PDFs and extract multilingual text using Tesseract OCR, PyPDFium2 in-memory page rendering, and state-based page-level resume deduplication.
+A high-performance, multilingual newspaper batch OCR, 4-factor duplicate detection, target-date filtering, and text combining application. Available as both a **Windows Desktop Application** and a **Render Cloud Container Web Application**.
 
 ---
 
-## Features
+## Features & Supported Languages
 
-- **Multilingual Support**:
-  - Auto-detects installed Tesseract language packs (`hin`, `eng`, `guj`, `mar`, `ben`, `tel`, `urd`, `osd`, etc.).
-  - Explicitly flags uninstalled language packs as `[Unavailable]` in dropdown options.
-  - Supports single language and multi-language combinations (e.g. `Hindi + English`, `Gujarati + English`).
-- **High-Performance Memory Pipeline**:
-  - Uses `pypdfium2` for ultra-fast in-memory PDF page rendering (30ms per page).
-  - Renders pages page-by-page in RAM without writing temporary PNG image files to disk.
-  - Conservative default of **2 parallel worker processes** and **200 DPI resolution**.
-- **Page-Level Resume & Deduplication**:
-  - Remembers completed pages in `config/state.json`.
-  - If a batch is interrupted, re-running skips completed pages and appends only missing ones with zero duplicate text.
-- **Error Resilience**:
-  - Process failure in one PDF does not stop remaining files in the batch.
-  - Detailed errors are logged to `logs/ocr_YYYY-MM-DD.log`.
-- **Text Combiner**:
-  - Merges all individual `.txt` output files in `extracted_text/` into `combined/all_newspaper.txt` with formatted newspaper headers.
+- **Native Linux & Windows Tesseract OCR Engine**:
+  - Full support for English (`eng`), Hindi (`hin`), Gujarati (`guj`), Marathi (`mar`), Bengali (`ben`), Telugu (`tel`), Urdu (`urd`).
+  - True scanned-image OCR rendering via `pypdfium2` (pure Python/C++ wheel with no external Poppler binary required).
+  - Digital PDF text stream extraction with automatic scanned-page detection.
+- **Exact 4-Factor Duplicate Detection**:
+  - `Duplicate = (Filename AND File Size AND Extension AND SHA-256 Content Hash)`.
+  - If even one factor differs, files are kept as UNIQUE.
+- **Target-Date Filtering**:
+  - Excludes non-matching newspaper dates (marked `OUT-OF-DATE`).
+  - Preserves `DATE UNKNOWN` PDFs.
+- **Versioned Text Combining**:
+  - Manual `[ 📝 COMBINE ALL TEXT ]` button merges outputs into aggregate files (`all_newspaper.txt`, `all_newspaper1.txt`, etc.).
+- **Dual Architecture**:
+  - **Desktop App**: Native Windows Tkinter GUI (`main.py`) with 2-worker multiprocessing pool and page-level resume.
+  - **Web App**: Flask API + Browser Dashboard (`api/index.py` & `public/`) deployed as a Docker Web Service on Render.
 
 ---
 
-## Folder Structure
+## Deploying to Render via Docker
 
-```
-Newspaper_OCR_Processor/
-│
-├── app/
-│   ├── main.py                  # Entry point
-│   ├── config.py                # App configuration & path auto-discovery
-│   ├── gui/
-│   │   ├── main_window.py       # Main Tkinter UI Window
-│   │   ├── settings_dialog.py   # Settings modal
-│   │   └── widgets.py           # Custom review table & progress card
-│   ├── ocr/
-│   │   ├── ocr_engine.py        # Tesseract engine wrapper
-│   │   └── worker.py            # Multiprocessing runner & page streamer
-│   ├── pdf/
-│   │   └── pdf_utils.py         # Page counter & in-memory page renderer
-│   ├── combine/
-│   │   └── text_combiner.py     # UTF-8 text merger with headers
-│   └── utils/
-│       ├── logger.py            # Rolling log manager
-│       └── state_manager.py     # Thread-safe JSON state tracker
-│
-├── pdfs/                        # Input directory for newspaper PDFs
-├── extracted_text/              # Processed text files per PDF
-├── redo/                        # Folder for manual bad PDF re-runs
-├── failed/                      # Error reports / logged bad PDFs
-├── combined/                    # Output folder for all_newspaper.txt
-├── logs/                        # Application logs
-├── config/                      # app_config.json & state.json
-├── tests/                       # Benchmark and test scripts
-├── main.py                      # Application launcher
-├── requirements.txt             # Python requirements
-└── README.md                    # User manual
+### Recommended Production Deployment (1-Click Blueprint)
+
+1. **Push Code to GitHub**:
+   ```bash
+   git add .
+   git commit -m "Configure Render Docker container deployment with Tesseract OCR"
+   git push origin main
+   ```
+2. **Deploy on Render**:
+   - Log in to [render.com](https://render.com).
+   - Click **New +** -> **Blueprint**.
+   - Connect your GitHub repository `mihirbhatt13/newspaper-ocr-processor`.
+   - Render automatically detects `render.yaml` and `Dockerfile`, installing `tesseract-ocr` and all language packs (`eng`, `hin`, `guj`, `mar`, `ben`, `tel`, `urd`).
+   - Click **Apply**.
+
+### Production Start Command
+```bash
+gunicorn -w 2 -b 0.0.0.0:$PORT api.index:app
 ```
 
 ---
 
-## How to Run
+## Local Development & Testing Options
 
-1. Open terminal inside the project folder:
-   ```bash
-   cd Newspaper_OCR_Processor
-   ```
+### Option 1: Native Windows Desktop GUI
+```bash
+python main.py
+```
 
-2. Run the application:
-   ```bash
-   python main.py
-   ```
+### Option 2: Local Python Web Server
+```bash
+python api/index.py
+```
+Open browser at `http://localhost:5000`.
 
-3. **Workflow**:
-   - Click **Select PDF Folder** or **Select PDF Files**.
-   - Select your OCR Language (e.g. `Auto` or `Hindi + English`).
-   - Click **START OCR**.
-   - Review extracted text in `extracted_text/`.
-   - Click **Combine All Text** to produce `combined/all_newspaper.txt`.
+### Option 3: Local Docker Container Execution
+Build and run the production Linux container locally using Docker:
+```bash
+docker build -t newspaper-ocr-processor .
+docker run -p 5000:5000 newspaper-ocr-processor
+```
+Open browser at `http://localhost:5000`.
+
+---
+
+## License
+MIT License

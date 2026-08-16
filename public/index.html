@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Newspaper OCR Processor - Web Application</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="logo-icon">📰</div>
+        <div>
+          <h1>Newspaper OCR Processor</h1>
+          <p class="subtitle">Multilingual Newspaper PDF Batch OCR & Deduplication System</p>
+        </div>
+      </div>
+      <div id="engineStatusBadge" class="status-badge status-checking">
+        Checking Engine...
+      </div>
+    </header>
+
+    <!-- Main Grid Layout -->
+    <main class="app-main">
+      <!-- Top Control Panel -->
+      <section class="card control-card">
+        <h2>System Controls</h2>
+        
+        <!-- File Dropzone -->
+        <div class="dropzone" id="dropzone">
+          <div class="dropzone-content">
+            <span class="dropzone-icon">📁</span>
+            <h3>Drag & Drop Newspaper PDFs Here</h3>
+            <p>or click to select PDF files from your computer</p>
+            <input type="file" id="fileInput" multiple accept=".pdf" class="file-input">
+          </div>
+        </div>
+
+        <div class="file-stats-bar" id="fileStatsBar" style="display: none;">
+          <span id="selectedFilesCount">0 Files Selected</span>
+          <button class="btn btn-sm btn-outline-danger" id="btnClearFiles">Clear Files</button>
+        </div>
+
+        <!-- Controls Form Grid -->
+        <div class="controls-grid">
+          <div class="form-group">
+            <label for="targetDateInput">Target Date Filter (Optional)</label>
+            <input type="date" id="targetDateInput" class="form-control" value="2026-08-09">
+            <small class="help-text">Non-matching dates will be marked OUT-OF-DATE & separated.</small>
+          </div>
+
+          <div class="form-group">
+            <label for="ocrLanguageSelect">OCR Language</label>
+            <select id="ocrLanguageSelect" class="form-control">
+              <option value="Auto">Auto (Hindi + English)</option>
+              <option value="English">English (eng)</option>
+              <option value="Hindi">Hindi (hin)</option>
+              <option value="Gujarati">Gujarati (guj)</option>
+              <option value="Marathi">Marathi (mar)</option>
+              <option value="Bengali">Bengali (ben)</option>
+              <option value="Telugu">Telugu (tel)</option>
+              <option value="Urdu">Urdu (urd)</option>
+            </select>
+            <small class="help-text">Selected language model will be passed to Tesseract.</small>
+          </div>
+        </div>
+
+        <!-- Action Button Bar -->
+        <div class="action-bar">
+          <button class="btn btn-primary" id="btnCheckDuplicates">
+            <span>🔍</span> Check Duplicates
+          </button>
+          <button class="btn btn-success" id="btnStartOcr" disabled>
+            <span>▶</span> Start OCR Processing
+          </button>
+          <button class="btn btn-danger" id="btnStopOcr" disabled>
+            <span>⏹</span> Stop Processing
+          </button>
+          <button class="btn btn-warning" id="btnCombine" disabled>
+            <span>📝</span> COMBINE ALL TEXT
+          </button>
+        </div>
+      </section>
+
+      <!-- Progress Section -->
+      <section class="card progress-card" id="progressSection">
+        <h2>Live Progress Status</h2>
+        
+        <div class="status-message" id="lblStatus">Ready for input. Upload PDF files to start.</div>
+
+        <!-- PDF Progress -->
+        <div class="progress-group">
+          <div class="progress-label">
+            <span>PDF Page Progress</span>
+            <span id="pdfProgressText">0 / 0 Pages</span>
+          </div>
+          <div class="progress-bar-container">
+            <div class="progress-bar progress-blue" id="pbarPdf" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <!-- Batch Progress -->
+        <div class="progress-group">
+          <div class="progress-label">
+            <span>Batch File Progress</span>
+            <span id="batchProgressText">0 / 0 PDFs</span>
+          </div>
+          <div class="progress-bar-container">
+            <div class="progress-bar progress-green" id="pbarBatch" style="width: 0%;"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Review Table Card -->
+      <section class="card table-card">
+        <div class="card-header-flex">
+          <h2>PDF Review Queue</h2>
+          <span class="badge badge-info" id="queueCountBadge">0 Items</span>
+        </div>
+        <div class="table-responsive">
+          <table class="data-table" id="reviewTable">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>PDF Filename</th>
+                <th>Extracted Date</th>
+                <th>Pages</th>
+                <th>PDF Type</th>
+                <th>Dup Status</th>
+                <th>OCR Status</th>
+                <th>Text Length</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="reviewTableBody">
+              <tr class="empty-row">
+                <td colspan="9">No PDF files uploaded yet. Drag & drop files above.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Duplicate Records Card -->
+      <section class="card table-card">
+        <div class="card-header-flex">
+          <h2>Duplicates & Excluded Files</h2>
+          <span class="badge badge-warning" id="duplicateCountBadge">0 Duplicates</span>
+        </div>
+        <div class="table-responsive">
+          <table class="data-table" id="duplicateTable">
+            <thead>
+              <tr>
+                <th>PDF Filename</th>
+                <th>Newspaper</th>
+                <th>Date</th>
+                <th>Duplicate Of / Reason</th>
+                <th>SHA-256 Hash</th>
+              </tr>
+            </thead>
+            <tbody id="duplicateTableBody">
+              <tr class="empty-row">
+                <td colspan="5">No duplicate or out-of-date files detected.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Text View / Export Modal -->
+  <div class="modal-backdrop" id="textModal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modalTitle">Extracted Text Preview</h3>
+        <button class="btn-close" id="btnCloseModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <textarea id="modalTextArea" readonly class="modal-textarea"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="btnCopyText">📋 Copy Text</button>
+        <button class="btn btn-primary" id="btnDownloadTxt">💾 Download TXT</button>
+        <button class="btn btn-secondary" id="btnCloseModalFooter">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>

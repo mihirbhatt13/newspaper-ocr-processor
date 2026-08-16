@@ -44,7 +44,10 @@ COMMON_TESSERACT_PATHS = [
     r"C:\Program Files\Tesseract-OCR\tesseract.exe",
     r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
     os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+    "/usr/bin/tesseract",
+    "/usr/local/bin/tesseract",
 ]
+
 
 COMMON_POPPLER_PATHS = [
     r"C:\Program Files\poppler\poppler-26.02.0\Library\bin",
@@ -97,10 +100,20 @@ def get_installed_tesseract_languages(tesseract_cmd=None):
     except Exception:
         pass
 
-    # Fallback: check tessdata directory next to tesseract.exe or standard path
+    # Fallback: check tessdata directory next to tesseract executable or standard paths
     tessdata_dir = os.path.join(os.path.dirname(tesseract_cmd), "tessdata")
     if not os.path.exists(tessdata_dir):
-        tessdata_dir = r"C:\Program Files\Tesseract-OCR\tessdata"
+        linux_paths = [
+            "/usr/share/tesseract-ocr/4.00/tessdata",
+            "/usr/share/tesseract-ocr/5/tessdata",
+            "/usr/share/tessdata",
+            r"C:\Program Files\Tesseract-OCR\tessdata"
+        ]
+        for lp in linux_paths:
+            if os.path.exists(lp):
+                tessdata_dir = lp
+                break
+
     
     if os.path.exists(tessdata_dir):
         langs = []

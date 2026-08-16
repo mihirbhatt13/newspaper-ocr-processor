@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: newspaper-ocr-processor
+    env: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 5000
