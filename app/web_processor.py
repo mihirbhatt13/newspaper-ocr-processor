@@ -1,5 +1,6 @@
 import io
 import os
+import time
 import tempfile
 import hashlib
 from pathlib import Path
@@ -254,3 +255,208 @@ def combine_texts_batch(items: list) -> str:
         parts.append(text.strip() + "\n\n" + "-" * 50 + "\n\n")
 
     return "".join(parts)
+
+
+import json
+import threading
+import uuid
+
+class BatchJobManager:
+    """Manages server-side asynchronous batch PDF OCR jobs stored in /tmp/batch_jobs/."""
+    
+    BASE_DIR = Path(tempfile.gettempdir()) / "batch_jobs"
+
+    @classmethod
+    def _get_job_dir(cls, job_id: str) -> Path:
+        return cls.BASE_DIR / job_id
+
+    @classmethod
+    def create_job(cls) -> str:
+        job_id = f"job_{uuid.uuid4().hex[:12]}"
+        job_dir = cls._get_job_dir(job_id)
+        (job_dir / "input").mkdir(parents=True, exist_ok=True)
+        (job_dir / "output").mkdir(parents=True, exist_ok=True)
+        
+        status_data = {
+            "job_id": job_id,
+            "status": "INITIALIZING",
+            "created_at": time.time(),
+            "total_pdfs": 0,
+            "completed_pdfs": 0,
+            "failed_pdfs": 0,
+            "total_pages": 0,
+            "processed_pages": 0,
+            "current_pdf": "",
+            "current_page": 0,
+            "ocr_language": "Auto",
+            "files": {},
+            "combined_text": ""
+        }
+        cls._write_status(job_id, status_data)
+        return job_id
+
+    @classmethod
+    def _write_status(cls, job_id: str, status_data: dict):
+        job_dir = cls._get_job_dir(job_id)
+        status_file = job_dir / "status.json"
+        with open(status_file, "w", encoding="utf-8") as f:
+            json.dump(status_data, f, indent=2)
+
+    @classmethod
+    def get_job_status(cls, job_id: str) -> dict:
+        status_file = cls._get_job_dir(job_id) / "status.json"
+        if not status_file.exists():
+            return {"job_id": job_id, "status": "NOT_FOUND", "error": "Job ID not found."}
+        try:
+            with open(status_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            return {"job_id": job_id, "status": "ERROR", "error": str(e)}
+
+    @classmethod
+    def save_file(cls, job_id: str, filename: str, file_bytes: bytes) -> dict:
+        job_dir = cls._get_job_dir(job_id)
+        if not job_dir.exists():
+            return {"success": False, "error": "Job directory does not exist."}
+        
+        file_path = job_dir / "input" / filename
+        with open(file_path, "wb") as f:
+            f.write(file_bytes)
+        
+        # Read page count
+        try:
+            reader = PdfReader(io.BytesIO(file_bytes))
+            page_count = len(reader.pages)
+        except Exception:
+            page_count = 0
+            
+        status = cls.get_job_status(job_id)
+        status["files"][filename] = {
+            "filename": filename,
+            "file_size": len(file_bytes),
+            "page_count": page_count,
+            "status": "PENDING",
+            "extracted_text": ""
+        }
+        status["total_pdfs"] = len(status["files"])
+        status["total_pages"] = sum(f["page_count"] for f in status["files"].values())
+        cls._write_status(job_id, status)
+        return {"success": True, "filename": filename, "page_count": page_count}
+
+    @classmethod
+    def start_job(cls, job_id: str, ocr_language: str = "Auto") -> dict:
+        status = cls.get_job_status(job_id)
+        if status.get("status") in ["PROCESSING", "COMPLETED"]:
+            return {"success": True, "message": f"Job already {status.get('status')}"}
+        
+        status["status"] = "PROCESSING"
+        status["ocr_language"] = ocr_language
+        cls._write_status(job_id, status)
+        
+        t = threading.Thread(target=cls._run_worker, args=(job_id, ocr_language), daemon=True)
+        t.start()
+        return {"success": True, "job_id": job_id, "status": "PROCESSING"}
+
+    @classmethod
+    def _run_worker(cls, job_id: str, ocr_language: str):
+        job_dir = cls._get_job_dir(job_id)
+        status = cls.get_job_status(job_id)
+        input_dir = job_dir / "input"
+        output_dir = job_dir / "output"
+        
+        tess_cmd = find_tesseract()
+        engine = OCREngine(tesseract_cmd=tess_cmd) if (tess_cmd and os.path.exists(tess_cmd)) else None
+        
+        file_names = list(status["files"].keys())
+        
+        for filename in file_names:
+            file_info = status["files"][filename]
+            if file_info["status"] in ["SUCCESS", "COMPLETED"]:
+                continue
+            
+            status["current_pdf"] = filename
+            file_info["status"] = "PROCESSING..."
+            cls._write_status(job_id, status)
+            
+            pdf_path = input_dir / filename
+            if not pdf_path.exists():
+                file_info["status"] = "FAILED"
+                status["failed_pdfs"] += 1
+                cls._write_status(job_id, status)
+                continue
+            
+            try:
+                reader = PdfReader(str(pdf_path))
+                page_count = len(reader.pages)
+            except Exception as e:
+                file_info["status"] = "FAILED"
+                file_info["error"] = str(e)
+                status["failed_pdfs"] += 1
+                cls._write_status(job_id, status)
+                continue
+
+            full_pdf_text = ""
+            pdf_failed = False
+            
+            for p in range(1, page_count + 1):
+                status["current_page"] = p
+                cls._write_status(job_id, status)
+                
+                page_text = ""
+                # Check digital text stream first
+                try:
+                    if p <= len(reader.pages):
+                        page_text = (reader.pages[p - 1].extract_text() or "").strip()
+                except Exception:
+                    page_text = ""
+                
+                # If scanned/sparse and tesseract engine is available
+                if len(page_text) < 150 and engine:
+                    try:
+                        pil_img = render_pdf_page_to_image(str(pdf_path), page_num=p, dpi=200)
+                        ocr_res = engine.perform_ocr(pil_img, lang_setting=ocr_language).strip()
+                        if len(ocr_res) > len(page_text) or len(ocr_res) >= 10:
+                            page_text = ocr_res
+                    except Exception as ocr_err:
+                        print(f"Server OCR error on {filename} page {p}: {ocr_err}")
+                
+                full_pdf_text += f"\n--- PAGE {p} ---\n" + page_text
+                status["processed_pages"] += 1
+                cls._write_status(job_id, status)
+
+            file_info["status"] = "SUCCESS"
+            file_info["extracted_text"] = full_pdf_text.strip()
+            status["completed_pdfs"] += 1
+            
+            # Write individual output TXT
+            out_file = output_dir / f"{filename}.txt"
+            with open(out_file, "w", encoding="utf-8") as f:
+                f.write(file_info["extracted_text"])
+                
+            cls._write_status(job_id, status)
+
+        # Generate combined text result
+        combined_items = []
+        for filename in file_names:
+            txt_path = output_dir / f"{filename}.txt"
+            if txt_path.exists():
+                with open(txt_path, "r", encoding="utf-8") as f:
+                    combined_items.append({"filename": filename, "text": f.read()})
+                    
+        status["combined_text"] = combine_texts_batch(combined_items)
+        status["status"] = "COMPLETED"
+        status["current_pdf"] = "Complete"
+        cls._write_status(job_id, status)
+
+    @classmethod
+    def get_job_result(cls, job_id: str) -> dict:
+        status = cls.get_job_status(job_id)
+        if status.get("status") == "NOT_FOUND":
+            return {"success": False, "error": "Job not found"}
+        return {
+            "success": True,
+            "status": status.get("status"),
+            "combined_text": status.get("combined_text", ""),
+            "files": status.get("files", {})
+        }
+

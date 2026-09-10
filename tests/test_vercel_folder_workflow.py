@@ -17,7 +17,6 @@ def run_vercel_folder_workflow_tests():
     html_path = PROJECT_ROOT / "public" / "index.html"
     assert html_path.exists(), "public/index.html must exist!"
     html_content = html_path.read_text(encoding='utf-8')
-    assert "workerConcurrencySelect" in html_content, "index.html must contain workerConcurrencySelect element!"
     assert "lblOverallPages" in html_content, "index.html must contain lblOverallPages element!"
     assert "btnRetryFailed" in html_content, "index.html must contain btnRetryFailed element!"
     assert "cntProcessing" in html_content, "index.html must contain cntProcessing badge!"
@@ -25,21 +24,22 @@ def run_vercel_folder_workflow_tests():
     assert "lblCurrentPdf" in html_content, "index.html must contain lblCurrentPdf element!"
     assert "cntSuccess" in html_content, "index.html must contain cntSuccess badge!"
     assert "cntPending" in html_content, "index.html must contain cntPending badge!"
-    print("[TEST 1] Vercel HTML5 Folder Selection & Concurrency Controls Check: PASS (workerConcurrencySelect, Live Counters & Badges present)", flush=True)
+    print("[TEST 1] Vercel HTML5 Folder Selection Check: PASS (Live Counters & Badges present)", flush=True)
 
-    # 2. Verify public/js/app.js folder handling logic & error messages
+    # 2. Verify public/js/app.js folder handling logic & batch job endpoints
     js_path = PROJECT_ROOT / "public" / "js" / "app.js"
     assert js_path.exists(), "public/js/app.js must exist!"
     js_content = js_path.read_text(encoding='utf-8')
     assert "scanDirectoryEntry" in js_content, "app.js must contain scanDirectoryEntry recursive folder scanner!"
     assert "detectPdfPageCount" in js_content, "app.js must contain detectPdfPageCount real page-count function!"
-    assert "processPageHybrid" in js_content, "app.js must contain processPageHybrid real OCR function!"
-    assert "runWorker" in js_content, "app.js must contain runWorker pool for parallel execution!"
+    assert "/api/batch/create" in js_content, "app.js must utilize /api/batch/create endpoint!"
+    assert "/api/batch/upload-file" in js_content, "app.js must utilize /api/batch/upload-file endpoint!"
+    assert "/api/batch/start" in js_content, "app.js must utilize /api/batch/start endpoint!"
+    assert "/api/batch/status" in js_content, "app.js must utilize /api/batch/status polling endpoint!"
     assert "btnRetryFailed" in js_content, "app.js must contain btnRetryFailed event listener!"
     assert "fetchWithRetry" in js_content, "app.js must contain fetchWithRetry helper for network resilience!"
     assert "updateLiveCounters" in js_content, "app.js must contain updateLiveCounters function!"
-    print("[TEST 2] Vercel JS Concurrent Worker Pool & Retry Check: PASS (runWorker, detectPdfPageCount, processPageHybrid & updateLiveCounters present)", flush=True)
-
+    print("[TEST 2] Vercel JS Server-Side Batch Worker Integration Check: PASS (Batch endpoints & polling present)", flush=True)
 
     # 3. Verify vercel.json configuration
     vercel_path = PROJECT_ROOT / "vercel.json"
@@ -56,7 +56,19 @@ def run_vercel_folder_workflow_tests():
     assert h_res.status_code == 200
     h_json = h_res.get_json()
     assert h_json["status"] == "online"
-    print("[TEST 4] Vercel /api/health Endpoint Check: PASS", flush=True)
+
+    c_res = client.post("/api/batch/create")
+    assert c_res.status_code == 200
+    c_json = c_res.get_json()
+    assert c_json["success"] is True
+    job_id = c_json["job_id"]
+
+    s_res = client.get(f"/api/batch/status/{job_id}")
+    assert s_res.status_code == 200
+    s_json = s_res.get_json()
+    assert s_json["success"] is True
+    assert s_json["status_data"]["job_id"] == job_id
+    print("[TEST 4] Vercel /api/health & /api/batch Endpoints Check: PASS", flush=True)
 
     # 5. Verify Desktop main.py Untouched
     main_py = PROJECT_ROOT / "main.py"
@@ -72,3 +84,4 @@ def run_vercel_folder_workflow_tests():
 
 if __name__ == "__main__":
     run_vercel_folder_workflow_tests()
+

@@ -137,6 +137,100 @@ def api_combine():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+from app.web_processor import BatchJobManager
+
+@app.route("/api/batch/create", methods=["POST"])
+def api_batch_create():
+    try:
+        backend_url = os.environ.get("OCR_BACKEND_URL")
+        tess_cmd = find_tesseract()
+        if backend_url and not (tess_cmd and os.path.exists(tess_cmd)):
+            import requests as py_requests
+            resp = py_requests.post(f"{backend_url.rstrip('/')}/api/batch/create", timeout=30)
+            return Response(resp.content, status=resp.status_code, content_type=resp.headers.get("content-type", "application/json"))
+
+        job_id = BatchJobManager.create_job()
+        return jsonify({"success": True, "job_id": job_id})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/batch/upload-file", methods=["POST"])
+def api_batch_upload_file():
+    try:
+        if "file" not in request.files or "job_id" not in request.form:
+            return jsonify({"success": False, "error": "Missing file or job_id in upload request."}), 400
+        
+        job_id = request.form["job_id"]
+        f = request.files["file"]
+        filename = f.filename
+        pdf_bytes = f.read()
+
+        backend_url = os.environ.get("OCR_BACKEND_URL")
+        tess_cmd = find_tesseract()
+        if backend_url and not (tess_cmd and os.path.exists(tess_cmd)):
+            import requests as py_requests
+            files = {"file": (filename, pdf_bytes, "application/pdf")}
+            data = {"job_id": job_id}
+            resp = py_requests.post(f"{backend_url.rstrip('/')}/api/batch/upload-file", files=files, data=data, timeout=60)
+            return Response(resp.content, status=resp.status_code, content_type=resp.headers.get("content-type", "application/json"))
+
+        res = BatchJobManager.save_file(job_id, filename, pdf_bytes)
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/batch/start", methods=["POST"])
+def api_batch_start():
+    try:
+        data = request.get_json() or {}
+        job_id = data.get("job_id")
+        ocr_language = data.get("ocr_language", "Auto")
+
+        if not job_id:
+            return jsonify({"success": False, "error": "Missing job_id."}), 400
+
+        backend_url = os.environ.get("OCR_BACKEND_URL")
+        tess_cmd = find_tesseract()
+        if backend_url and not (tess_cmd and os.path.exists(tess_cmd)):
+            import requests as py_requests
+            resp = py_requests.post(f"{backend_url.rstrip('/')}/api/batch/start", json=data, timeout=30)
+            return Response(resp.content, status=resp.status_code, content_type=resp.headers.get("content-type", "application/json"))
+
+        res = BatchJobManager.start_job(job_id, ocr_language=ocr_language)
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/batch/status/<job_id>", methods=["GET"])
+def api_batch_status(job_id):
+    try:
+        backend_url = os.environ.get("OCR_BACKEND_URL")
+        tess_cmd = find_tesseract()
+        if backend_url and not (tess_cmd and os.path.exists(tess_cmd)):
+            import requests as py_requests
+            resp = py_requests.get(f"{backend_url.rstrip('/')}/api/batch/status/{job_id}", timeout=15)
+            return Response(resp.content, status=resp.status_code, content_type=resp.headers.get("content-type", "application/json"))
+
+        status = BatchJobManager.get_job_status(job_id)
+        return jsonify({"success": True, "status_data": status})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/batch/result/<job_id>", methods=["GET"])
+def api_batch_result(job_id):
+    try:
+        backend_url = os.environ.get("OCR_BACKEND_URL")
+        tess_cmd = find_tesseract()
+        if backend_url and not (tess_cmd and os.path.exists(tess_cmd)):
+            import requests as py_requests
+            resp = py_requests.get(f"{backend_url.rstrip('/')}/api/batch/result/{job_id}", timeout=30)
+            return Response(resp.content, status=resp.status_code, content_type=resp.headers.get("content-type", "application/json"))
+
+        res = BatchJobManager.get_job_result(job_id)
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 # Catch-all route for static assets
 @app.route("/<path:path>")
 def static_proxy(path):
@@ -146,3 +240,4 @@ def static_proxy(path):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
