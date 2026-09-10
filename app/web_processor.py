@@ -366,10 +366,15 @@ class BatchJobManager:
         
         tess_cmd = find_tesseract()
         engine = OCREngine(tesseract_cmd=tess_cmd) if (tess_cmd and os.path.exists(tess_cmd)) else None
+        if engine:
+            try:
+                engine.get_installed_languages() # pre-warm language pack cache once
+            except Exception:
+                pass
         
         file_names = list(status["files"].keys())
         
-        num_workers = min(os.cpu_count() or 2, 4)
+        num_workers = min(os.cpu_count() or 4, 6)
         from concurrent.futures import ThreadPoolExecutor, as_completed
         
         for filename in file_names:
