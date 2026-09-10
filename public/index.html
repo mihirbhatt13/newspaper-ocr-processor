@@ -78,6 +78,16 @@
             </select>
             <small class="help-text">Selected language model will be passed to Tesseract.</small>
           </div>
+
+          <div class="form-group">
+            <label for="workerConcurrencySelect">Server OCR Workers</label>
+            <select id="workerConcurrencySelect" class="form-control">
+              <option value="2" selected>2 Workers (Recommended)</option>
+              <option value="3">3 Workers (Fast)</option>
+              <option value="1">1 Worker (Sequential)</option>
+            </select>
+            <small class="help-text">Number of parallel server OCR workers.</small>
+          </div>
         </div>
 
         <!-- Action Button Bar -->
@@ -90,6 +100,9 @@
           </button>
           <button class="btn btn-danger" id="btnStopOcr" disabled>
             <span>⏹</span> Stop Processing
+          </button>
+          <button class="btn btn-outline" id="btnRetryFailed" disabled style="display: none;">
+            <span>🔄</span> Retry Failed PDFs
           </button>
           <button class="btn btn-warning" id="btnCombine" disabled>
             <span>📝</span> COMBINE ALL TEXT
@@ -106,7 +119,8 @@
         <!-- Live Batch Counters Grid -->
         <div class="progress-details-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px;">
           <div class="stat-box" style="background: rgba(15,23,42,0.6); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color);"><span class="stat-label" style="font-size: 11px; color: var(--text-muted); display: block;">Overall PDFs</span> <span id="lblOverallPdfs" class="stat-value" style="font-weight: 700; font-size: 14px;">0 / 0</span></div>
-          <div class="stat-box" style="background: rgba(15,23,42,0.6); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color); grid-column: span 2;"><span class="stat-label" style="font-size: 11px; color: var(--text-muted); display: block;">Current PDF</span> <span id="lblCurrentPdf" class="stat-value" style="font-weight: 700; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block;">None</span></div>
+          <div class="stat-box" style="background: rgba(15,23,42,0.6); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color);"><span class="stat-label" style="font-size: 11px; color: var(--text-muted); display: block;">Total Pages</span> <span id="lblOverallPages" class="stat-value" style="font-weight: 700; font-size: 14px;">0 / 0</span></div>
+          <div class="stat-box" style="background: rgba(15,23,42,0.6); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color); grid-column: span 2;"><span class="stat-label" style="font-size: 11px; color: var(--text-muted); display: block;">Currently Processing</span> <span id="lblCurrentPdf" class="stat-value" style="font-weight: 700; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block;">None</span></div>
           <div class="stat-box" style="background: rgba(15,23,42,0.6); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color);"><span class="stat-label" style="font-size: 11px; color: var(--text-muted); display: block;">Current Page</span> <span id="lblCurrentPage" class="stat-value" style="font-weight: 700; font-size: 14px;">0 / 0</span></div>
         </div>
 
@@ -114,6 +128,7 @@
           <span class="badge" style="background: rgba(46,125,50,0.25); color: #4ade80; border: 1px solid #2e7d32;">SUCCESS: <span id="cntSuccess">0</span></span>
           <span class="badge" style="background: rgba(220,38,38,0.25); color: #f87171; border: 1px solid #dc2626;">FAILED: <span id="cntFailed">0</span></span>
           <span class="badge" style="background: rgba(2,132,199,0.25); color: #38bdf8; border: 1px solid #0284c7;">NEEDS REVIEW: <span id="cntNeedsReview">0</span></span>
+          <span class="badge" style="background: rgba(37,99,235,0.25); color: #60a5fa; border: 1px solid #2563eb;">PROCESSING: <span id="cntProcessing">0</span></span>
           <span class="badge" style="background: rgba(230,81,0,0.25); color: #fb923c; border: 1px solid #e65100;">DUPLICATES: <span id="cntDuplicates">0</span></span>
           <span class="badge" style="background: rgba(148,163,184,0.2); color: #cbd5e1; border: 1px solid #475569;">PENDING: <span id="cntPending">0</span></span>
         </div>

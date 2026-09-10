@@ -270,34 +270,54 @@ document.addEventListener("DOMContentLoaded", () => {
     return 0; // Signals unreadable / invalid PDF structure
   }
 
+  // Additional State for Batch Progress Tracking
+  state.processedPagesCount = 0;
+  state.totalPagesCount = 0;
+
   function updateLiveCounters() {
     const lblOverallPdfs = document.getElementById("lblOverallPdfs");
+    const lblOverallPages = document.getElementById("lblOverallPages");
     const lblCurrentPdf = document.getElementById("lblCurrentPdf");
     const lblCurrentPage = document.getElementById("lblCurrentPage");
     const cntSuccess = document.getElementById("cntSuccess");
     const cntFailed = document.getElementById("cntFailed");
     const cntNeedsReview = document.getElementById("cntNeedsReview");
+    const cntProcessing = document.getElementById("cntProcessing");
     const cntDuplicates = document.getElementById("cntDuplicates");
     const cntPending = document.getElementById("cntPending");
+    const btnRetryFailed = document.getElementById("btnRetryFailed");
 
-    let success = 0, failed = 0, needsReview = 0, pending = 0;
+    let success = 0, failed = 0, needsReview = 0, processing = 0, pending = 0;
 
     state.eligibleFiles.forEach(f => {
       if (f.ocr_status === "SUCCESS" || f.ocr_status === "COMPLETED") success++;
       else if (f.ocr_status === "FAILED" || f.ocr_status === "ERROR") failed++;
       else if (f.ocr_status === "NEEDS REVIEW" || f.ocr_status === "ENGINE REQUIRED") needsReview++;
+      else if (f.ocr_status === "PROCESSING...") processing++;
       else pending++;
     });
 
     const duplicates = state.duplicateFiles.length;
-    const processedCount = success + failed + needsReview;
+    const completedCount = success + failed + needsReview;
 
-    if (lblOverallPdfs) lblOverallPdfs.textContent = `${processedCount} / ${state.eligibleFiles.length}`;
+    if (lblOverallPdfs) lblOverallPdfs.textContent = `${completedCount} / ${state.eligibleFiles.length}`;
+    if (lblOverallPages) lblOverallPages.textContent = `${state.processedPagesCount} / ${state.totalPagesCount}`;
     if (cntSuccess) cntSuccess.textContent = success;
     if (cntFailed) cntFailed.textContent = failed;
     if (cntNeedsReview) cntNeedsReview.textContent = needsReview;
+    if (cntProcessing) cntProcessing.textContent = processing;
     if (cntDuplicates) cntDuplicates.textContent = duplicates;
     if (cntPending) cntPending.textContent = pending;
+
+    if (btnRetryFailed) {
+      if (failed > 0 || needsReview > 0) {
+        btnRetryFailed.style.display = "inline-block";
+        btnRetryFailed.disabled = state.isProcessing;
+      } else {
+        btnRetryFailed.style.display = "none";
+        btnRetryFailed.disabled = true;
+      }
+    }
   }
 
   async function handleFiles(files, isFolderMode = false) {
@@ -378,7 +398,11 @@ document.addEventListener("DOMContentLoaded", () => {
       updateLiveCounters();
     }
 
-    setStatus(`Detected ${state.inspectedFiles.length} PDF(s) in queue. Click "Check Duplicates" or "Start OCR Processing".`);
+    state.totalPagesCount = state.eligibleFiles.reduce((acc, f) => acc + (typeof f.page_count === "number" ? f.page_count : 0), 0);
+    state.processedPagesCount = 0;
+    updateLiveCounters();
+
+    setStatus(`Detected ${state.inspectedFiles.length} PDF(s) in queue (${state.totalPagesCount} Total Pages). Click "Check Duplicates" or "Start OCR Processing".`);
   }
 
   // Calculate SHA256 in browser
@@ -430,11 +454,13 @@ document.addEventListener("DOMContentLoaded", () => {
         state.eligibleFiles = state.inspectedFiles.filter((f) => eligibleNames.has(f.filename));
         state.duplicateFiles = duplicateList;
 
+        state.totalPagesCount = state.eligibleFiles.reduce((acc, f) => acc + (typeof f.page_count === "number" ? f.page_count : 0), 0);
+
         renderReviewTable();
         renderDuplicateTable();
         updateLiveCounters();
 
-        setStatus(`Duplicate Check Complete: ${state.eligibleFiles.length} Eligible PDF(s), ${duplicateList.length} Duplicate/Out-of-date File(s).`);
+        setStatus(`Duplicate Check Complete: ${state.eligibleFiles.length} Eligible PDF(s) (${state.totalPagesCount} Pages), ${duplicateList.length} Duplicate/Out-of-date File(s).`);
         btnStartOcr.disabled = state.eligibleFiles.length === 0;
       }
     } catch (e) {
@@ -552,7 +578,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
   }
 
-  // Start OCR Processing Button for ALL PDFs sequentially
+  // Start OCR Processing Button with Controlled Worker Concurrency Pool
   btnStartOcr.addEventListener("click", async () => {
     if (!state.eligibleFiles.length) {
       alert("No eligible PDF files to process.");
@@ -565,106 +591,116 @@ document.addEventListener("DOMContentLoaded", () => {
     btnCheckDuplicates.disabled = true;
     btnStopOcr.disabled = false;
     btnCombine.disabled = true;
+    
+    // Reset output list only for non-retry run
     state.processedResults = [];
+    state.processedPagesCount = 0;
+    state.totalPagesCount = state.eligibleFiles.reduce((acc, f) => acc + (typeof f.page_count === "number" ? f.page_count : 0), 0);
 
     const selectedLang = ocrLanguageSelect.value;
+    const workerConcurrency = parseInt(document.getElementById("workerConcurrencySelect")?.value || "2");
     const totalFiles = state.eligibleFiles.length;
 
     const lblOverallPdfs = document.getElementById("lblOverallPdfs");
     const lblCurrentPdf = document.getElementById("lblCurrentPdf");
     const lblCurrentPage = document.getElementById("lblCurrentPage");
 
-    for (let fIdx = 0; fIdx < totalFiles; fIdx++) {
-      if (state.stopRequested) {
-        setStatus("OCR Processing stopped by user.");
-        break;
-      }
+    let nextFileIdx = 0;
 
-      const fileInfo = state.eligibleFiles[fIdx];
-      
-      if (lblOverallPdfs) lblOverallPdfs.textContent = `${fIdx + 1} / ${totalFiles}`;
-      if (lblCurrentPdf) lblCurrentPdf.textContent = fileInfo.filename;
+    async function runWorker(workerId) {
+      while (nextFileIdx < totalFiles && !state.stopRequested) {
+        const fIdx = nextFileIdx++;
+        const fileInfo = state.eligibleFiles[fIdx];
 
-      // Handle unreadable / zero-page PDF cleanly without breaking batch
-      const pageCount = typeof fileInfo.page_count === "number" ? fileInfo.page_count : 0;
-      if (pageCount <= 0 || fileInfo.ocr_status === "NEEDS REVIEW") {
-        fileInfo.ocr_status = "NEEDS REVIEW";
-        if (!fileInfo.extractedText) {
-          fileInfo.extractedText = "[ERROR]: PDF page count invalid or unreadable structure.";
+        // Skip files that are already completed or duplicate
+        if (fileInfo.ocr_status === "SUCCESS" || fileInfo.ocr_status === "COMPLETED") {
+          continue;
         }
-        if (lblCurrentPage) lblCurrentPage.textContent = "0 / 0";
-        updatePdfProgress(0, 0, `Skipped unreadable file ${fileInfo.filename}`);
-        updateBatchProgress(fIdx + 1, totalFiles);
-        updateLiveCounters();
+
+        const pageCount = typeof fileInfo.page_count === "number" ? fileInfo.page_count : 0;
+        if (pageCount <= 0 || fileInfo.ocr_status === "NEEDS REVIEW") {
+          fileInfo.ocr_status = "NEEDS REVIEW";
+          if (!fileInfo.extractedText) {
+            fileInfo.extractedText = "[ERROR]: PDF page count invalid or unreadable structure.";
+          }
+          updateLiveCounters();
+          renderReviewTable();
+          continue;
+        }
+
+        fileInfo.ocr_status = "PROCESSING...";
         renderReviewTable();
-        setStatus(`PDF '${fileInfo.filename}' marked NEEDS REVIEW. Continuing batch processing...`);
-        continue;
-      }
+        updateLiveCounters();
 
-      fileInfo.ocr_status = "PROCESSING...";
-      renderReviewTable();
-      updateLiveCounters();
-
-      updateBatchProgress(fIdx, totalFiles, `Processing ${fileInfo.filename} (${fIdx + 1}/${totalFiles})...`);
-
-      const fileObj = fileInfo.fileObject;
-      let pdfDoc = null;
-      try {
-        if (window.pdfjsLib) {
-          pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-          const buffer = await fileObj.arrayBuffer();
-          pdfDoc = await pdfjsLib.getDocument({ data: buffer }).promise;
-        }
-      } catch (e) {
-        console.warn("Could not load PDF.js doc for", fileInfo.filename, e);
-      }
-
-      let fullPdfText = "";
-      let hasError = false;
-      let errorMessage = "";
-
-      for (let pNum = 1; pNum <= pageCount; pNum++) {
-        if (state.stopRequested) break;
-
-        if (lblCurrentPage) lblCurrentPage.textContent = `${pNum} / ${pageCount}`;
-        updatePdfProgress(pNum, pageCount, `File ${fIdx + 1}/${totalFiles}: ${fileInfo.filename} - Page ${pNum}/${pageCount}`);
-
+        const fileObj = fileInfo.fileObject;
+        let pdfDoc = null;
         try {
-          const res = await processPageHybrid(fileObj, pdfDoc, pNum, selectedLang);
-
-          if (res.success) {
-            fullPdfText += `\n--- PAGE ${pNum} ---\n` + res.text;
-          } else {
-            hasError = true;
-            errorMessage = res.message || "OCR Processing Error";
-            fileInfo.ocr_status = (res.ocr_error === "TESSERACT_UNAVAILABLE") ? "ENGINE REQUIRED" : "FAILED";
-            break;
+          if (window.pdfjsLib) {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+            const buffer = await fileObj.arrayBuffer();
+            pdfDoc = await pdfjsLib.getDocument({ data: buffer }).promise;
           }
         } catch (e) {
-          hasError = true;
-          errorMessage = e.message;
-          fileInfo.ocr_status = "FAILED";
-          break;
+          console.warn(`Worker ${workerId}: Could not load PDF.js doc for ${fileInfo.filename}`, e);
         }
-      }
 
-      if (!hasError && !state.stopRequested) {
-        fileInfo.ocr_status = "SUCCESS";
-        fileInfo.extractedText = fullPdfText.trim();
-        state.processedResults.push({
-          filename: fileInfo.filename,
-          text: fileInfo.extractedText,
-        });
-      } else if (hasError) {
-        fileInfo.extractedText = `[ERROR]: ${errorMessage}`;
-        setStatus(`OCR processing failed for '${fileInfo.filename}'. The remaining files will continue processing.`);
-      }
+        let fullPdfText = "";
+        let hasError = false;
+        let errorMessage = "";
 
-      updatePdfProgress(pageCount, pageCount, `Finished ${fileInfo.filename}`);
-      updateBatchProgress(fIdx + 1, totalFiles);
-      updateLiveCounters();
-      renderReviewTable();
+        for (let pNum = 1; pNum <= pageCount; pNum++) {
+          if (state.stopRequested) break;
+
+          if (lblCurrentPdf) lblCurrentPdf.textContent = fileInfo.filename;
+          if (lblCurrentPage) lblCurrentPage.textContent = `Page ${pNum} / ${pageCount}`;
+          updatePdfProgress(pNum, pageCount, `Worker ${workerId}: Processing ${fileInfo.filename} - Page ${pNum}/${pageCount}`);
+
+          try {
+            const res = await processPageHybrid(fileObj, pdfDoc, pNum, selectedLang);
+
+            if (res.success) {
+              fullPdfText += `\n--- PAGE ${pNum} ---\n` + res.text;
+            } else {
+              hasError = true;
+              errorMessage = res.message || "OCR Processing Error";
+              fileInfo.ocr_status = (res.ocr_error === "TESSERACT_UNAVAILABLE") ? "ENGINE REQUIRED" : "FAILED";
+              break;
+            }
+          } catch (e) {
+            hasError = true;
+            errorMessage = e.message;
+            fileInfo.ocr_status = "FAILED";
+            break;
+          } finally {
+            state.processedPagesCount++;
+            updateLiveCounters();
+          }
+        }
+
+        if (!hasError && !state.stopRequested) {
+          fileInfo.ocr_status = "SUCCESS";
+          fileInfo.extractedText = fullPdfText.trim();
+          state.processedResults.push({
+            filename: fileInfo.filename,
+            text: fileInfo.extractedText,
+          });
+        } else if (hasError) {
+          fileInfo.extractedText = `[ERROR]: ${errorMessage}`;
+        }
+
+        updateBatchProgress(state.processedResults.length, totalFiles);
+        updateLiveCounters();
+        renderReviewTable();
+      }
     }
+
+    // Launch worker pool
+    const activeWorkers = [];
+    for (let w = 1; w <= Math.min(workerConcurrency, totalFiles); w++) {
+      activeWorkers.push(runWorker(w));
+    }
+
+    await Promise.all(activeWorkers);
 
     state.isProcessing = false;
     btnStartOcr.disabled = false;
@@ -675,11 +711,32 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (state.processedResults.length > 0) {
       btnCombine.disabled = false;
-      setStatus(`Batch Processing Complete! Processed ${state.processedResults.length} of ${totalFiles} PDF(s). Click "COMBINE ALL TEXT" to view/download output.`);
+      setStatus(`Batch Processing Complete! Processed ${state.processedResults.length} of ${totalFiles} PDF(s) (${state.processedPagesCount} Pages). Click "COMBINE ALL TEXT" to view/download output.`);
     } else {
       setStatus("Processing finished with errors or no results.");
     }
   });
+
+  // Retry Failed PDFs Button Event Listener
+  const btnRetryFailed = document.getElementById("btnRetryFailed");
+  if (btnRetryFailed) {
+    btnRetryFailed.addEventListener("click", () => {
+      let resetCount = 0;
+      state.eligibleFiles.forEach(f => {
+        if (f.ocr_status === "FAILED" || f.ocr_status === "NEEDS REVIEW" || f.ocr_status === "ENGINE REQUIRED" || f.ocr_status === "ERROR") {
+          f.ocr_status = "PENDING";
+          f.extractedText = "";
+          resetCount++;
+        }
+      });
+      if (resetCount > 0) {
+        renderReviewTable();
+        updateLiveCounters();
+        setStatus(`Reset ${resetCount} failed/review PDF(s). Restarting OCR processing...`);
+        btnStartOcr.click();
+      }
+    });
+  }
 
   // Stop Button
   btnStopOcr.addEventListener("click", () => {

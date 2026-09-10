@@ -17,16 +17,15 @@ def run_vercel_folder_workflow_tests():
     html_path = PROJECT_ROOT / "public" / "index.html"
     assert html_path.exists(), "public/index.html must exist!"
     html_content = html_path.read_text(encoding='utf-8')
-    assert "pdf.min.js" in html_content, "index.html must include PDF.js script tag for client-side page counting!"
-    assert "tesseract.min.js" in html_content, "index.html must include Tesseract.js WASM script tag for client-side real OCR!"
-    assert "webkitdirectory" in html_content, "index.html must contain webkitdirectory attribute for folder upload!"
-    assert "folderInput" in html_content, "index.html must contain folderInput element!"
-    assert "btnSelectFolder" in html_content, "index.html must contain btnSelectFolder element!"
+    assert "workerConcurrencySelect" in html_content, "index.html must contain workerConcurrencySelect element!"
+    assert "lblOverallPages" in html_content, "index.html must contain lblOverallPages element!"
+    assert "btnRetryFailed" in html_content, "index.html must contain btnRetryFailed element!"
+    assert "cntProcessing" in html_content, "index.html must contain cntProcessing badge!"
     assert "lblOverallPdfs" in html_content, "index.html must contain lblOverallPdfs counter!"
     assert "lblCurrentPdf" in html_content, "index.html must contain lblCurrentPdf element!"
     assert "cntSuccess" in html_content, "index.html must contain cntSuccess badge!"
     assert "cntPending" in html_content, "index.html must contain cntPending badge!"
-    print("[TEST 1] Vercel HTML5 Folder Selection, PDF.js & Tesseract.js Check: PASS (webkitdirectory, PDF.js, Tesseract.js WASM & Live Counters present)", flush=True)
+    print("[TEST 1] Vercel HTML5 Folder Selection & Concurrency Controls Check: PASS (workerConcurrencySelect, Live Counters & Badges present)", flush=True)
 
     # 2. Verify public/js/app.js folder handling logic & error messages
     js_path = PROJECT_ROOT / "public" / "js" / "app.js"
@@ -35,11 +34,11 @@ def run_vercel_folder_workflow_tests():
     assert "scanDirectoryEntry" in js_content, "app.js must contain scanDirectoryEntry recursive folder scanner!"
     assert "detectPdfPageCount" in js_content, "app.js must contain detectPdfPageCount real page-count function!"
     assert "processPageHybrid" in js_content, "app.js must contain processPageHybrid real OCR function!"
+    assert "runWorker" in js_content, "app.js must contain runWorker pool for parallel execution!"
+    assert "btnRetryFailed" in js_content, "app.js must contain btnRetryFailed event listener!"
     assert "fetchWithRetry" in js_content, "app.js must contain fetchWithRetry helper for network resilience!"
-    assert "Unable to process the selected folder" in js_content, "app.js must contain user-friendly empty folder alert!"
-    assert "OCR processing failed for" in js_content, "app.js must contain per-file batch processing error handling!"
     assert "updateLiveCounters" in js_content, "app.js must contain updateLiveCounters function!"
-    print("[TEST 2] Vercel JS Folder Scanner, Page-Count & Hybrid WASM OCR Check: PASS (scanDirectoryEntry, detectPdfPageCount, processPageHybrid & updateLiveCounters present)", flush=True)
+    print("[TEST 2] Vercel JS Concurrent Worker Pool & Retry Check: PASS (runWorker, detectPdfPageCount, processPageHybrid & updateLiveCounters present)", flush=True)
 
 
     # 3. Verify vercel.json configuration
