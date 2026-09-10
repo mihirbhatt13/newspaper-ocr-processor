@@ -614,21 +614,34 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       const jobId = createData.job_id;
 
-      // 2. Upload PDFs to Server Batch Storage (uploaded ONCE per PDF file)
-      for (let i = 0; i < totalFiles; i++) {
-        if (state.stopRequested) break;
-        const fileInfo = state.eligibleFiles[i];
-        setStatus(`Uploading file ${i + 1}/${totalFiles}: ${fileInfo.filename}...`);
-        
+      // 2. Upload PDFs to Server Batch Storage (concurrent chunk batch upload)
+      let uploadedCount = 0;
+      const uploadConcurrency = 3;
+      
+      const uploadSingleFile = async (fileInfo) => {
+        if (state.stopRequested) return;
         const formData = new FormData();
         formData.append("job_id", jobId);
         formData.append("file", fileInfo.fileObject);
         
-        const upRes = await fetchWithRetry("/api/batch/upload-file", { method: "POST", body: formData }, 2);
-        const upData = await upRes.json();
-        if (!upData.success) {
-          console.warn("Upload file warning:", fileInfo.filename, upData.error);
+        try {
+          const upRes = await fetchWithRetry("/api/batch/upload-file", { method: "POST", body: formData }, 2);
+          const upData = await upRes.json();
+          if (!upData.success) {
+            console.warn("Upload file warning:", fileInfo.filename, upData.error);
+          }
+        } catch (e) {
+          console.warn("Upload exception for:", fileInfo.filename, e);
+        } finally {
+          uploadedCount++;
+          setStatus(`Uploading files to server batch queue: ${uploadedCount}/${totalFiles} complete...`);
         }
+      };
+
+      for (let i = 0; i < totalFiles; i += uploadConcurrency) {
+        if (state.stopRequested) break;
+        const chunk = state.eligibleFiles.slice(i, i + uploadConcurrency);
+        await Promise.all(chunk.map(uploadSingleFile));
       }
 
       if (state.stopRequested) {

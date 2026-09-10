@@ -369,6 +369,9 @@ class BatchJobManager:
         
         file_names = list(status["files"].keys())
         
+        num_workers = min(os.cpu_count() or 2, 4)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
         for filename in file_names:
             file_info = status["files"][filename]
             if file_info["status"] in ["SUCCESS", "COMPLETED"]:
@@ -395,34 +398,37 @@ class BatchJobManager:
                 cls._write_status(job_id, status)
                 continue
 
-            full_pdf_text = ""
-            pdf_failed = False
-            
-            for p in range(1, page_count + 1):
-                status["current_page"] = p
-                cls._write_status(job_id, status)
-                
-                page_text = ""
-                # Check digital text stream first
+            def process_page_task(p_num):
+                p_text = ""
                 try:
-                    if p <= len(reader.pages):
-                        page_text = (reader.pages[p - 1].extract_text() or "").strip()
+                    if p_num <= len(reader.pages):
+                        p_text = (reader.pages[p_num - 1].extract_text() or "").strip()
                 except Exception:
-                    page_text = ""
+                    p_text = ""
                 
-                # If scanned/sparse and tesseract engine is available
-                if len(page_text) < 150 and engine:
+                if len(p_text) < 150 and engine:
                     try:
-                        pil_img = render_pdf_page_to_image(str(pdf_path), page_num=p, dpi=200)
+                        pil_img = render_pdf_page_to_image(str(pdf_path), page_num=p_num, dpi=200)
                         ocr_res = engine.perform_ocr(pil_img, lang_setting=ocr_language).strip()
-                        if len(ocr_res) > len(page_text) or len(ocr_res) >= 10:
-                            page_text = ocr_res
+                        if len(ocr_res) > len(p_text) or len(ocr_res) >= 10:
+                            p_text = ocr_res
                     except Exception as ocr_err:
-                        print(f"Server OCR error on {filename} page {p}: {ocr_err}")
-                
-                full_pdf_text += f"\n--- PAGE {p} ---\n" + page_text
-                status["processed_pages"] += 1
-                cls._write_status(job_id, status)
+                        print(f"Parallel OCR error on {filename} page {p_num}: {ocr_err}")
+                return p_num, p_text
+
+            page_results = {}
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                futures = {executor.submit(process_page_task, p): p for p in range(1, page_count + 1)}
+                for future in as_completed(futures):
+                    p_num, p_text = future.result()
+                    page_results[p_num] = p_text
+                    status["current_page"] = p_num
+                    status["processed_pages"] += 1
+                    cls._write_status(job_id, status)
+
+            full_pdf_text = ""
+            for p in range(1, page_count + 1):
+                full_pdf_text += f"\n--- PAGE {p} ---\n" + page_results.get(p, "")
 
             file_info["status"] = "SUCCESS"
             file_info["extracted_text"] = full_pdf_text.strip()
