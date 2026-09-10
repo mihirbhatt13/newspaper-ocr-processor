@@ -25,14 +25,16 @@ def index():
 
 @app.route("/api/health", methods=["GET"])
 def health():
+    backend_url = os.environ.get("OCR_BACKEND_URL")
     tess_cmd = find_tesseract()
     installed_langs = get_installed_tesseract_languages(tess_cmd) if tess_cmd else []
     return jsonify({
         "status": "online",
         "service": "Newspaper OCR Processor Web API",
-        "tesseract_available": bool(tess_cmd and os.path.exists(tess_cmd)),
-        "tesseract_path": tess_cmd,
-        "installed_languages": installed_langs
+        "tesseract_available": bool(tess_cmd and os.path.exists(tess_cmd)) or bool(backend_url),
+        "tesseract_path": tess_cmd or (f"Remote Proxy: {backend_url}" if backend_url else None),
+        "installed_languages": installed_langs,
+        "ocr_backend_url": backend_url
     })
 
 @app.route("/api/languages", methods=["GET"])
@@ -96,10 +98,30 @@ def api_process_page():
         lang_setting = request.form.get("ocr_language", "Auto")
         dpi = int(request.form.get("dpi", 200))
         
+        backend_url = os.environ.get("OCR_BACKEND_URL")
+        tess_cmd = find_tesseract()
+
+        # Forward to external OCR backend if configured and local tesseract is unavailable
+        if backend_url and not (tess_cmd and os.path.exists(tess_cmd)):
+            try:
+                import requests as py_requests
+                target = f"{backend_url.rstrip('/')}/api/process-page"
+                files = {"file": (filename, pdf_bytes, "application/pdf")}
+                data = {"page_num": page_num, "ocr_language": lang_setting, "dpi": dpi}
+                resp = py_requests.post(target, files=files, data=data, timeout=60)
+                return Response(resp.content, status=resp.status_code, content_type=resp.headers.get("content-type", "application/json"))
+            except Exception as proxy_err:
+                return jsonify({
+                    "success": False,
+                    "ocr_error": "PROXY_ERROR",
+                    "message": f"Failed to reach remote OCR backend service at {backend_url}: {proxy_err}"
+                }), 502
+
         res = process_pdf_page_bytes(pdf_bytes, filename, page_num=page_num, lang_setting=lang_setting, dpi=dpi)
         return jsonify(res)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
 
 @app.route("/api/combine", methods=["POST"])
 def api_combine():

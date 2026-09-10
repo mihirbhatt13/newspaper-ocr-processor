@@ -13,6 +13,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // DOM Elements
   const dropzone = document.getElementById("dropzone");
   const fileInput = document.getElementById("fileInput");
+  const folderInput = document.getElementById("folderInput");
+  const btnSelectFolder = document.getElementById("btnSelectFolder");
+  const btnSelectFiles = document.getElementById("btnSelectFiles");
   const fileStatsBar = document.getElementById("fileStatsBar");
   const selectedFilesCount = document.getElementById("selectedFilesCount");
   const btnClearFiles = document.getElementById("btnClearFiles");
@@ -69,26 +72,100 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // File Selection & Drag Drop
-  dropzone.addEventListener("click", () => fileInput.click());
+  // File & Folder Selection Listeners
+  if (btnSelectFolder) {
+    btnSelectFolder.addEventListener("click", (e) => {
+      e.stopPropagation();
+      folderInput.click();
+    });
+  }
+
+  if (btnSelectFiles) {
+    btnSelectFiles.addEventListener("click", (e) => {
+      e.stopPropagation();
+      fileInput.click();
+    });
+  }
+
+  dropzone.addEventListener("click", (e) => {
+    if (e.target.id === "btnSelectFolder" || e.target.id === "btnSelectFiles") return;
+    if (folderInput) folderInput.click();
+  });
+
   dropzone.addEventListener("dragover", (e) => {
     e.preventDefault();
     dropzone.classList.add("dragover");
   });
   dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
-  dropzone.addEventListener("drop", (e) => {
+
+  dropzone.addEventListener("drop", async (e) => {
     e.preventDefault();
     dropzone.classList.remove("dragover");
-    if (e.dataTransfer.files.length) {
-      handleFiles(Array.from(e.dataTransfer.files));
+    
+    const items = e.dataTransfer.items;
+    let extractedFiles = [];
+
+    if (items && items.length) {
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === "file") {
+          const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+          if (entry && entry.isDirectory) {
+            const dirFiles = await scanDirectoryEntry(entry);
+            extractedFiles.push(...dirFiles);
+          } else {
+            const file = item.getAsFile();
+            if (file) extractedFiles.push(file);
+          }
+        }
+      }
+    } else if (e.dataTransfer.files.length) {
+      extractedFiles = Array.from(e.dataTransfer.files);
+    }
+
+    if (extractedFiles.length) {
+      handleFiles(extractedFiles, true);
     }
   });
 
-  fileInput.addEventListener("change", (e) => {
-    if (e.target.files.length) {
-      handleFiles(Array.from(e.target.files));
+  if (fileInput) {
+    fileInput.addEventListener("change", (e) => {
+      if (e.target.files.length) {
+        handleFiles(Array.from(e.target.files), false);
+      }
+    });
+  }
+
+  if (folderInput) {
+    folderInput.addEventListener("change", (e) => {
+      if (e.target.files.length) {
+        handleFiles(Array.from(e.target.files), true);
+      }
+    });
+  }
+
+  // Recursive Directory Scanner for Drag-and-Drop
+  async function scanDirectoryEntry(dirEntry) {
+    const files = [];
+    const dirReader = dirEntry.createReader();
+    
+    const readEntriesPromise = () => new Promise((resolve) => dirReader.readEntries(resolve));
+    
+    let entries = await readEntriesPromise();
+    while (entries.length > 0) {
+      for (const entry of entries) {
+        if (entry.isFile) {
+          const file = await new Promise((resolve) => entry.file(resolve));
+          files.push(file);
+        } else if (entry.isDirectory) {
+          const subFiles = await scanDirectoryEntry(entry);
+          files.push(...subFiles);
+        }
+      }
+      entries = await readEntriesPromise();
     }
-  });
+    return files;
+  }
 
   btnClearFiles.addEventListener("click", () => {
     state.selectedFiles = [];
@@ -96,7 +173,8 @@ document.addEventListener("DOMContentLoaded", () => {
     state.eligibleFiles = [];
     state.duplicateFiles = [];
     state.processedResults = [];
-    fileInput.value = "";
+    if (fileInput) fileInput.value = "";
+    if (folderInput) folderInput.value = "";
     fileStatsBar.style.display = "none";
     btnStartOcr.disabled = true;
     btnCombine.disabled = true;
@@ -105,18 +183,32 @@ document.addEventListener("DOMContentLoaded", () => {
     setStatus("Files cleared. Ready for input.");
   });
 
-  async function handleFiles(files) {
+  async function handleFiles(files, isFolderMode = false) {
     const pdfFiles = files.filter((f) => f.name.toLowerCase().endsWith(".pdf"));
+    
     if (!pdfFiles.length) {
-      alert("Please select valid PDF files.");
+      alert("Unable to process the selected folder. Please check that it contains PDF files.");
+      setStatus("Unable to process the selected folder. No PDF files found.");
       return;
     }
 
     state.selectedFiles = pdfFiles;
-    selectedFilesCount.textContent = `${pdfFiles.length} PDF File(s) Selected`;
+    
+    // Detect folder name if available
+    let folderName = "";
+    if (pdfFiles[0] && pdfFiles[0].webkitRelativePath) {
+      const parts = pdfFiles[0].webkitRelativePath.split("/");
+      if (parts.length > 1) folderName = parts[0];
+    }
+
+    const labelText = folderName 
+      ? `📁 ${pdfFiles.length} Newspaper PDFs found in folder '${folderName}'`
+      : `📁 ${pdfFiles.length} Newspaper PDF File(s) Selected`;
+
+    selectedFilesCount.textContent = labelText;
     fileStatsBar.style.display = "flex";
 
-    setStatus(`Inspecting ${pdfFiles.length} PDF file(s)...`);
+    setStatus(`Detected ${pdfFiles.length} PDF(s). Inspecting files...`);
 
     // Inspect files via API
     state.inspectedFiles = [];
@@ -148,6 +240,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setStatus(`Loaded ${state.inspectedFiles.length} PDF(s). Click "Check Duplicates" or "Start OCR Processing".`);
     btnStartOcr.disabled = false;
   }
+
 
   // Calculate SHA256 in browser
   async function calculateSha256(file) {
@@ -283,11 +376,13 @@ document.addEventListener("DOMContentLoaded", () => {
         });
       } else if (hasError) {
         fileInfo.extractedText = `[ERROR]: ${errorMessage}`;
+        setStatus(`OCR processing failed for '${fileInfo.filename}'. The remaining files will continue processing.`);
       }
 
       updatePdfProgress(pageCount, pageCount, `Finished ${fileInfo.filename}`);
       renderReviewTable();
     }
+
 
     state.isProcessing = false;
     btnStartOcr.disabled = false;

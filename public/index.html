@@ -33,9 +33,18 @@
         <div class="dropzone" id="dropzone">
           <div class="dropzone-content">
             <span class="dropzone-icon">📁</span>
-            <h3>Drag & Drop Newspaper PDFs Here</h3>
-            <p>or click to select PDF files from your computer</p>
-            <input type="file" id="fileInput" multiple accept=".pdf" class="file-input">
+            <h3>Drag & Drop Newspaper Folder or PDFs Here</h3>
+            <p>Select an entire folder containing newspaper PDFs or choose individual files</p>
+            <div class="upload-btn-group" style="margin-top: 14px; display: flex; gap: 10px; justify-content: center;">
+              <button type="button" class="btn btn-outline" id="btnSelectFolder">
+                📁 Select Newspaper Folder
+              </button>
+              <button type="button" class="btn btn-outline" id="btnSelectFiles">
+                📄 Select PDF Files
+              </button>
+            </div>
+            <input type="file" id="fileInput" multiple accept=".pdf" class="file-input" style="display: none;">
+            <input type="file" id="folderInput" webkitdirectory directory multiple class="file-input" style="display: none;">
           </div>
         </div>
 
@@ -43,6 +52,7 @@
           <span id="selectedFilesCount">0 Files Selected</span>
           <button class="btn btn-sm btn-outline-danger" id="btnClearFiles">Clear Files</button>
         </div>
+
 
         <!-- Controls Form Grid -->
         <div class="controls-grid">
