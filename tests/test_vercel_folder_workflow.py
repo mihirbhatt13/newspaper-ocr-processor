@@ -20,7 +20,11 @@ def run_vercel_folder_workflow_tests():
     assert "webkitdirectory" in html_content, "index.html must contain webkitdirectory attribute for folder upload!"
     assert "folderInput" in html_content, "index.html must contain folderInput element!"
     assert "btnSelectFolder" in html_content, "index.html must contain btnSelectFolder element!"
-    print("[TEST 1] Vercel HTML5 Folder Selection Markup Check: PASS (webkitdirectory & folderInput present)", flush=True)
+    assert "lblOverallPdfs" in html_content, "index.html must contain lblOverallPdfs counter!"
+    assert "lblCurrentPdf" in html_content, "index.html must contain lblCurrentPdf element!"
+    assert "cntSuccess" in html_content, "index.html must contain cntSuccess badge!"
+    assert "cntPending" in html_content, "index.html must contain cntPending badge!"
+    print("[TEST 1] Vercel HTML5 Folder Selection & Live Counters Check: PASS (webkitdirectory & Live Counters present)", flush=True)
 
     # 2. Verify public/js/app.js folder handling logic & error messages
     js_path = PROJECT_ROOT / "public" / "js" / "app.js"
@@ -29,7 +33,9 @@ def run_vercel_folder_workflow_tests():
     assert "scanDirectoryEntry" in js_content, "app.js must contain scanDirectoryEntry recursive folder scanner!"
     assert "Unable to process the selected folder" in js_content, "app.js must contain user-friendly empty folder alert!"
     assert "OCR processing failed for" in js_content, "app.js must contain per-file batch processing error handling!"
-    print("[TEST 2] Vercel JS Folder Scanner & Error Handling Check: PASS (scanDirectoryEntry & alert messages present)", flush=True)
+    assert "updateLiveCounters" in js_content, "app.js must contain updateLiveCounters function!"
+    print("[TEST 2] Vercel JS Folder Scanner, Multi-file Queue & Live Counters Check: PASS (scanDirectoryEntry, updateLiveCounters & alerts present)", flush=True)
+
 
     # 3. Verify vercel.json configuration
     vercel_path = PROJECT_ROOT / "vercel.json"
