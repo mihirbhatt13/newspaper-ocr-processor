@@ -442,6 +442,116 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // Language Mapping Helper for Tesseract.js WASM Engine
+  function mapLanguageForTesseractJs(langSetting) {
+    const map = {
+      "Auto": "hin+eng",
+      "English": "eng",
+      "Hindi": "hin",
+      "Gujarati": "guj",
+      "Marathi": "mar",
+      "Bengali": "ben",
+      "Telugu": "tel",
+      "Urdu": "urd",
+      "Hindi + English": "hin+eng",
+      "Gujarati + English": "guj+eng",
+      "Marathi + English": "mar+eng",
+      "Bengali + English": "ben+eng",
+      "Telugu + English": "tel+eng"
+    };
+    return map[langSetting] || "hin+eng";
+  }
+
+  // Render PDF Page to HTML5 Canvas in browser using PDF.js
+  async function renderPdfPageToCanvas(pdfDoc, pageNum, dpi = 200) {
+    const page = await pdfDoc.getPage(pageNum);
+    const scale = dpi / 72.0;
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    await page.render({ canvasContext: context, viewport: viewport }).promise;
+    return canvas;
+  }
+
+  // Hybrid Page Processor: Digital Text Stream -> Backend Serverless OCR -> Client-Side Tesseract.js WASM OCR
+  async function processPageHybrid(fileObj, pdfDoc, pageNum, langSetting) {
+    // 1. Digital Text Stream Extraction via PDF.js
+    if (pdfDoc) {
+      try {
+        const page = await pdfDoc.getPage(pageNum);
+        const textContent = await page.getTextContent();
+        const extractedStreamText = textContent.items.map((item) => item.str).join(" ").trim();
+        if (extractedStreamText.length >= 150) {
+          return {
+            success: true,
+            text: extractedStreamText,
+            engine_used: "PDF Text Stream"
+          };
+        }
+      } catch (e) {
+        console.warn("Digital text stream check failed for page", pageNum, e);
+      }
+    }
+
+    // 2. Server Backend OCR API (/api/process-page)
+    try {
+      const formData = new FormData();
+      formData.append("file", fileObj);
+      formData.append("page_num", pageNum);
+      formData.append("ocr_language", langSetting);
+
+      const res = await fetchWithRetry("/api/process-page", { method: "POST", body: formData }, 1);
+      const data = await res.json();
+      if (data.success && data.text && data.text.trim().length > 0) {
+        return {
+          success: true,
+          text: data.text,
+          engine_used: data.engine_used || "Tesseract OCR (Server)"
+        };
+      } else if (data.ocr_error !== "TESSERACT_UNAVAILABLE" && data.text && data.text.trim().length > 0) {
+        return {
+          success: true,
+          text: data.text,
+          engine_used: "Text Stream (Server)"
+        };
+      }
+    } catch (e) {
+      console.warn("Backend OCR endpoint failed for page", pageNum, e);
+    }
+
+    // 3. Client-Side WebAssembly Tesseract.js Real OCR (Zero Server Dependencies)
+    if (window.Tesseract && pdfDoc) {
+      try {
+        const canvas = await renderPdfPageToCanvas(pdfDoc, pageNum, 200);
+        const tessLang = mapLanguageForTesseractJs(langSetting);
+        const result = await Tesseract.recognize(canvas, tessLang);
+        const ocrText = (result && result.data && result.data.text) ? result.data.text.trim() : "";
+        
+        return {
+          success: true,
+          text: ocrText,
+          engine_used: `Tesseract.js WASM (${tessLang})`
+        };
+      } catch (wasmErr) {
+        console.error("Tesseract.js WASM OCR failed for page", pageNum, wasmErr);
+        return {
+          success: false,
+          ocr_error: "WASM_OCR_ERROR",
+          message: `Browser WebAssembly OCR failed for page ${pageNum}: ${wasmErr.message || wasmErr}`
+        };
+      }
+    }
+
+    return {
+      success: false,
+      ocr_error: "NO_ENGINE_AVAILABLE",
+      message: "No OCR engine available on server or browser for scanned newspaper page."
+    };
+  }
+
   // Start OCR Processing Button for ALL PDFs sequentially
   btnStartOcr.addEventListener("click", async () => {
     if (!state.eligibleFiles.length) {
@@ -498,6 +608,17 @@ document.addEventListener("DOMContentLoaded", () => {
       updateBatchProgress(fIdx, totalFiles, `Processing ${fileInfo.filename} (${fIdx + 1}/${totalFiles})...`);
 
       const fileObj = fileInfo.fileObject;
+      let pdfDoc = null;
+      try {
+        if (window.pdfjsLib) {
+          pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+          const buffer = await fileObj.arrayBuffer();
+          pdfDoc = await pdfjsLib.getDocument({ data: buffer }).promise;
+        }
+      } catch (e) {
+        console.warn("Could not load PDF.js doc for", fileInfo.filename, e);
+      }
+
       let fullPdfText = "";
       let hasError = false;
       let errorMessage = "";
@@ -508,25 +629,15 @@ document.addEventListener("DOMContentLoaded", () => {
         if (lblCurrentPage) lblCurrentPage.textContent = `${pNum} / ${pageCount}`;
         updatePdfProgress(pNum, pageCount, `File ${fIdx + 1}/${totalFiles}: ${fileInfo.filename} - Page ${pNum}/${pageCount}`);
 
-        const formData = new FormData();
-        formData.append("file", fileObj);
-        formData.append("page_num", pNum);
-        formData.append("ocr_language", selectedLang);
-
         try {
-          const res = await fetchWithRetry("/api/process-page", { method: "POST", body: formData }, 2);
-          const data = await res.json();
+          const res = await processPageHybrid(fileObj, pdfDoc, pNum, selectedLang);
 
-          if (data.success) {
-            fullPdfText += `\n--- PAGE ${pNum} ---\n` + data.text;
+          if (res.success) {
+            fullPdfText += `\n--- PAGE ${pNum} ---\n` + res.text;
           } else {
             hasError = true;
-            errorMessage = data.message || "OCR Processing Error";
-            if (data.ocr_error === "TESSERACT_UNAVAILABLE") {
-              fileInfo.ocr_status = "ENGINE REQUIRED";
-            } else {
-              fileInfo.ocr_status = "FAILED";
-            }
+            errorMessage = res.message || "OCR Processing Error";
+            fileInfo.ocr_status = (res.ocr_error === "TESSERACT_UNAVAILABLE") ? "ENGINE REQUIRED" : "FAILED";
             break;
           }
         } catch (e) {
