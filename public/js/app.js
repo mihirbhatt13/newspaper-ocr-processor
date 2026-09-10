@@ -199,6 +199,77 @@ document.addEventListener("DOMContentLoaded", () => {
     return { newspaperTitle, isoDate };
   }
 
+  // Fetch with Retry Helper for Network Resilience
+  async function fetchWithRetry(url, options, maxRetries = 2) {
+    let attempt = 0;
+    while (true) {
+      try {
+        const res = await fetch(url, options);
+        if (!res.ok && attempt < maxRetries && res.status >= 500) {
+          attempt++;
+          await new Promise((r) => setTimeout(r, 500 * attempt));
+          continue;
+        }
+        return res;
+      } catch (err) {
+        attempt++;
+        if (attempt > maxRetries) throw err;
+        await new Promise((r) => setTimeout(r, 500 * attempt));
+      }
+    }
+  }
+
+  // Fast Client-Side Real PDF Page-Count Detection (PDF.js -> Binary Parser -> API Fallback)
+  async function detectPdfPageCount(file) {
+    // 1. Try PDF.js if available in browser
+    try {
+      if (window.pdfjsLib) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+        const arrayBuffer = await file.arrayBuffer();
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        const pdfDoc = await loadingTask.promise;
+        if (pdfDoc && pdfDoc.numPages > 0) {
+          return pdfDoc.numPages;
+        }
+      }
+    } catch (e) {
+      console.warn("PDF.js page count failed for", file.name, e);
+    }
+
+    // 2. Try Binary TextDecoder structural inspection fallback
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const text = new TextDecoder("latin1").decode(new Uint8Array(arrayBuffer));
+      
+      const pageMatches = text.match(/\/Type\s*\/Page\b/g);
+      if (pageMatches && pageMatches.length > 0) {
+        return pageMatches.length;
+      }
+      
+      const countMatch = text.match(/\/Count\s+(\d+)/);
+      if (countMatch && parseInt(countMatch[1]) > 0) {
+        return parseInt(countMatch[1]);
+      }
+    } catch (e) {
+      console.warn("Binary PDF page count failed for", file.name, e);
+    }
+
+    // 3. Single-file API inspection fallback
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetchWithRetry("/api/inspect-pdf", { method: "POST", body: formData }, 1);
+      const data = await res.json();
+      if (data.success && data.info && data.info.page_count > 0) {
+        return data.info.page_count;
+      }
+    } catch (e) {
+      console.warn("Backend PDF page count inspect fallback failed for", file.name, e);
+    }
+
+    return 0; // Signals unreadable / invalid PDF structure
+  }
+
   function updateLiveCounters() {
     const lblOverallPdfs = document.getElementById("lblOverallPdfs");
     const lblCurrentPdf = document.getElementById("lblCurrentPdf");
@@ -219,8 +290,9 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     const duplicates = state.duplicateFiles.length;
+    const processedCount = success + failed + needsReview;
 
-    if (lblOverallPdfs) lblOverallPdfs.textContent = `${state.processedResults.length} / ${state.eligibleFiles.length}`;
+    if (lblOverallPdfs) lblOverallPdfs.textContent = `${processedCount} / ${state.eligibleFiles.length}`;
     if (cntSuccess) cntSuccess.textContent = success;
     if (cntFailed) cntFailed.textContent = failed;
     if (cntNeedsReview) cntNeedsReview.textContent = needsReview;
@@ -264,7 +336,7 @@ document.addEventListener("DOMContentLoaded", () => {
         file_size: file.size,
         newspaper_title: newspaperTitle,
         iso_date: isoDate,
-        page_count: 1, // Default, will update dynamically when page processing begins
+        page_count: "Detecting...",
         is_scanned: true,
         fileObject: file,
         status: "PENDING",
@@ -281,30 +353,32 @@ document.addEventListener("DOMContentLoaded", () => {
     renderDuplicateTable();
     updateLiveCounters();
 
-    setStatus(`Detected ${state.inspectedFiles.length} PDF(s) in queue. Click "Check Duplicates" or "Start OCR Processing".`);
+    setStatus(`Detected ${state.inspectedFiles.length} PDF(s) in queue. Calculating exact page counts...`);
     btnStartOcr.disabled = false;
 
-    // Asynchronously update exact page counts via API in background without blocking queue display
-    for (let i = 0; i < pdfFiles.length; i++) {
-      const file = pdfFiles[i];
-      const formData = new FormData();
-      formData.append("file", file);
-      try {
-        const res = await fetch("/api/inspect-pdf", { method: "POST", body: formData });
-        const data = await res.json();
-        if (data.success && data.info) {
-          const matchingItem = state.inspectedFiles.find(item => item.filename === file.name);
-          if (matchingItem) {
-            matchingItem.page_count = data.info.page_count || 1;
-            matchingItem.iso_date = data.info.iso_date || matchingItem.iso_date;
-            matchingItem.newspaper_title = data.info.newspaper_title || matchingItem.newspaper_title;
+    // Detect exact real page counts in controlled parallel batches of 5
+    const batchSize = 5;
+    for (let i = 0; i < pdfFiles.length; i += batchSize) {
+      const chunk = pdfFiles.slice(i, i + batchSize);
+      await Promise.all(chunk.map(async (file) => {
+        const matchingItem = state.inspectedFiles.find(item => item.filename === file.name);
+        if (matchingItem) {
+          const realPageCount = await detectPdfPageCount(file);
+          if (realPageCount > 0) {
+            matchingItem.page_count = realPageCount;
+          } else {
+            matchingItem.page_count = 0;
+            matchingItem.status = "NEEDS REVIEW";
+            matchingItem.ocr_status = "NEEDS REVIEW";
+            matchingItem.extractedText = "[ERROR]: Unreadable or corrupt PDF structure.";
           }
         }
-      } catch (e) {
-        // Safe background fallback
-      }
+      }));
+      renderReviewTable();
+      updateLiveCounters();
     }
-    renderReviewTable();
+
+    setStatus(`Detected ${state.inspectedFiles.length} PDF(s) in queue. Click "Check Duplicates" or "Start OCR Processing".`);
   }
 
   // Calculate SHA256 in browser
@@ -340,7 +414,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     try {
       const targetDate = targetDateInput.value;
-      const res = await fetch("/api/check-duplicates", {
+      const res = await fetchWithRetry("/api/check-duplicates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ files: payloadFiles, target_date: targetDate }),
@@ -397,17 +471,33 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       const fileInfo = state.eligibleFiles[fIdx];
+      
+      if (lblOverallPdfs) lblOverallPdfs.textContent = `${fIdx + 1} / ${totalFiles}`;
+      if (lblCurrentPdf) lblCurrentPdf.textContent = fileInfo.filename;
+
+      // Handle unreadable / zero-page PDF cleanly without breaking batch
+      const pageCount = typeof fileInfo.page_count === "number" ? fileInfo.page_count : 0;
+      if (pageCount <= 0 || fileInfo.ocr_status === "NEEDS REVIEW") {
+        fileInfo.ocr_status = "NEEDS REVIEW";
+        if (!fileInfo.extractedText) {
+          fileInfo.extractedText = "[ERROR]: PDF page count invalid or unreadable structure.";
+        }
+        if (lblCurrentPage) lblCurrentPage.textContent = "0 / 0";
+        updatePdfProgress(0, 0, `Skipped unreadable file ${fileInfo.filename}`);
+        updateBatchProgress(fIdx + 1, totalFiles);
+        updateLiveCounters();
+        renderReviewTable();
+        setStatus(`PDF '${fileInfo.filename}' marked NEEDS REVIEW. Continuing batch processing...`);
+        continue;
+      }
+
       fileInfo.ocr_status = "PROCESSING...";
       renderReviewTable();
       updateLiveCounters();
 
-      if (lblOverallPdfs) lblOverallPdfs.textContent = `${fIdx + 1} / ${totalFiles}`;
-      if (lblCurrentPdf) lblCurrentPdf.textContent = fileInfo.filename;
-
       updateBatchProgress(fIdx, totalFiles, `Processing ${fileInfo.filename} (${fIdx + 1}/${totalFiles})...`);
 
       const fileObj = fileInfo.fileObject;
-      const pageCount = fileInfo.page_count || 1;
       let fullPdfText = "";
       let hasError = false;
       let errorMessage = "";
@@ -424,7 +514,7 @@ document.addEventListener("DOMContentLoaded", () => {
         formData.append("ocr_language", selectedLang);
 
         try {
-          const res = await fetch("/api/process-page", { method: "POST", body: formData });
+          const res = await fetchWithRetry("/api/process-page", { method: "POST", body: formData }, 2);
           const data = await res.json();
 
           if (data.success) {
