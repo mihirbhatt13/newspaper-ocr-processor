@@ -1,6 +1,7 @@
 import os
 import tempfile
 import pytesseract
+
 from app.config import get_installed_tesseract_languages, DEFAULT_LANG_MAP
 from app.utils.file_utils import safe_remove_file
 
@@ -9,6 +10,7 @@ class OCREngine:
     def __init__(self, tesseract_cmd=None):
         self.tesseract_cmd = tesseract_cmd
         self._cached_installed = None
+        self._lang_validation_cache = {}
         if tesseract_cmd:
             pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
             
@@ -22,16 +24,22 @@ class OCREngine:
         
         Returns tuple: (is_valid, resolved_lang_code, missing_languages)
         """
+        if lang_setting in self._lang_validation_cache:
+            return self._lang_validation_cache[lang_setting]
+
         installed = set(self.get_installed_languages())
         
         if lang_setting == "Auto" or not lang_setting:
             if "hin" in installed and "eng" in installed:
-                return True, "hin+eng", []
+                res = (True, "hin+eng", [])
             elif "eng" in installed:
-                return True, "eng", []
+                res = (True, "eng", [])
             elif installed:
-                return True, list(installed)[0], []
-            return False, "", ["eng"]
+                res = (True, list(installed)[0], [])
+            else:
+                res = (False, "", ["eng"])
+            self._lang_validation_cache[lang_setting] = res
+            return res
 
         requested_codes = []
         
@@ -47,9 +55,12 @@ class OCREngine:
 
         missing = [code for code in requested_codes if code not in installed]
         if missing:
-            return False, "+".join(requested_codes), missing
+            res = (False, "+".join(requested_codes), missing)
+        else:
+            res = (True, "+".join(requested_codes), [])
 
-        return True, "+".join(requested_codes), []
+        self._lang_validation_cache[lang_setting] = res
+        return res
 
     def perform_ocr(self, pil_image, lang_setting="Auto", extra_config="--psm 3"):
         """Run OCR on a PIL Image object with Windows file locking protection."""
@@ -72,11 +83,11 @@ class OCREngine:
         except Exception:
             ocr_image = pil_image
 
-        # Save image to explicit temporary PNG file to avoid pytesseract's un-retried cleanup [WinError 32]
-        temp_img_fd, temp_img_path = tempfile.mkstemp(suffix=".png")
+        # Save image to explicit temporary BMP file to avoid pytesseract's un-retried cleanup [WinError 32]
+        temp_img_fd, temp_img_path = tempfile.mkstemp(suffix=".bmp")
         try:
             os.close(temp_img_fd)
-            ocr_image.save(temp_img_path, format="PNG")
+            ocr_image.save(temp_img_path, format="BMP")
             text = pytesseract.image_to_string(temp_img_path, lang=lang_code, config=extra_config)
             
             # Fallback to single text block mode (--psm 6) if automatic segmentation (--psm 3) returns sparse text

@@ -3,8 +3,11 @@ import os
 import time
 import tempfile
 import hashlib
+import threading
 from pathlib import Path
 from pypdf import PdfReader
+
+_pdfium_lock = threading.Lock()
 
 
 from app.config import ConfigManager, find_tesseract, DEFAULT_LANG_MAP
@@ -167,36 +170,51 @@ def process_pdf_page_bytes(pdf_bytes: bytes, filename: str, page_num: int, lang_
             "tess_version": "None"
         }
 
-    # Render single page to PIL Image in memory using a safe temporary file
-    temp_pdf_path = None
+    # Render single page to PIL Image directly in memory using pypdfium2 (with disk fallback)
+    pil_img = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
-            tf.write(pdf_bytes)
-            temp_pdf_path = tf.name
-        
-        pil_img = render_pdf_page_to_image(temp_pdf_path, page_num=page_num, dpi=dpi)
-    except Exception as e:
-        return {
-            "success": False,
-            "filename": filename,
-            "page_num": page_num,
-            "page_count": page_count,
-            "text": "",
-            "text_length": 0,
-            "preview_snippet": "",
-            "is_scanned": True,
-            "ocr_error": "RENDER_ERROR",
-            "message": f"Failed to render PDF page image for OCR: {e}",
-            "img_dims": "N/A",
-            "tess_path": tess_cmd,
-            "tess_version": tess_version
-        }
-    finally:
-        if temp_pdf_path and os.path.exists(temp_pdf_path):
-            try:
-                os.unlink(temp_pdf_path)
-            except Exception:
-                pass
+        with _pdfium_lock:
+            import pypdfium2 as pdfium
+            pdf = pdfium.PdfDocument(pdf_bytes)
+            if 1 <= page_num <= len(pdf):
+                page = pdf[page_num - 1]
+                scale = dpi / 72.0
+                pil_img = page.render(scale=scale).to_pil()
+                pdf.close()
+            else:
+                pdf.close()
+    except Exception:
+        pass
+
+    if pil_img is None:
+        temp_pdf_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+                tf.write(pdf_bytes)
+                temp_pdf_path = tf.name
+            pil_img = render_pdf_page_to_image(temp_pdf_path, page_num=page_num, dpi=dpi)
+        except Exception as e:
+            return {
+                "success": False,
+                "filename": filename,
+                "page_num": page_num,
+                "page_count": page_count,
+                "text": "",
+                "text_length": 0,
+                "preview_snippet": "",
+                "is_scanned": True,
+                "ocr_error": "RENDER_ERROR",
+                "message": f"Failed to render PDF page image for OCR: {e}",
+                "img_dims": "N/A",
+                "tess_path": tess_cmd,
+                "tess_version": tess_version
+            }
+        finally:
+            if temp_pdf_path and os.path.exists(temp_pdf_path):
+                try:
+                    os.unlink(temp_pdf_path)
+                except Exception:
+                    pass
 
     img_dims_str = f"{pil_img.width}x{pil_img.height}"
 

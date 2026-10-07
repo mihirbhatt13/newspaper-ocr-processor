@@ -90,7 +90,7 @@ def process_pdf_file(pdf_path, config_dict, progress_callback=None):
     processed_count = len(completed_pages)
     empty_pages_count = 0
     total_extracted_chars = 0
-    
+
     for page_num in range(1, total_pages + 1):
         if page_num in completed_pages:
             logger.info(f"[{pdf_filename}] Page {page_num}/{total_pages} already processed. Skipping.")
@@ -133,7 +133,6 @@ def process_pdf_file(pdf_path, config_dict, progress_callback=None):
             
             if progress_callback:
                 progress_callback(pdf_filename, page_num, total_pages, "Processing")
-                
         except Exception as e:
             logger.error(f"[{pdf_filename}] Error on page {page_num}: {e}")
             state_mgr.mark_failed(pdf_filename, f"Error on page {page_num}: {e}", total_pages=total_pages, sha256_hash=sha256)
@@ -153,7 +152,6 @@ def process_pdf_file(pdf_path, config_dict, progress_callback=None):
                     page_img.close()
                 except Exception:
                     pass
-            gc.collect()
 
     duration = round(time.time() - start_time, 2)
     state_mgr.update_duration(pdf_filename, duration, sha256_hash=sha256)

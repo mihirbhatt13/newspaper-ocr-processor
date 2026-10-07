@@ -59,12 +59,13 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const res = await fetch("/api/health");
       const data = await res.json();
+      state.ocrBackendUrl = data.ocr_backend_url || null;
       if (data.tesseract_available) {
         engineStatusBadge.className = "status-badge status-online";
         engineStatusBadge.innerHTML = `🟢 Tesseract Engine Active (${data.installed_languages.length} Languages)`;
       } else {
         engineStatusBadge.className = "status-badge status-warning";
-        engineStatusBadge.innerHTML = `🟡 Serverless Mode (Digital Text Stream Only)`;
+        engineStatusBadge.innerHTML = `🟡 Serverless Mode (Digital Text Stream & WASM OCR)`;
       }
     } catch (e) {
       engineStatusBadge.className = "status-badge status-warning";
@@ -578,7 +579,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
   }
 
-  // Start OCR Processing Button with Server-Side Batch Worker
+  // Start OCR Processing Button with Adaptive Server Batch / Client Hybrid Page Processor
   btnStartOcr.addEventListener("click", async () => {
     if (!state.eligibleFiles.length) {
       alert("No eligible PDF files to process.");
@@ -603,137 +604,209 @@ document.addEventListener("DOMContentLoaded", () => {
     const lblCurrentPdf = document.getElementById("lblCurrentPdf");
     const lblCurrentPage = document.getElementById("lblCurrentPage");
 
-    try {
-      // 1. Create Server Batch Job
-      setStatus("Initializing Server Batch Job...");
-      const createRes = await fetchWithRetry("/api/batch/create", { method: "POST" }, 2);
-      const createData = await createRes.json();
-      
-      if (!createData.success || !createData.job_id) {
-        throw new Error(createData.error || "Failed to create server batch job");
-      }
-      const jobId = createData.job_id;
+    // Check if remote backend worker proxy is configured for server batching
+    let useServerBatch = Boolean(state.ocrBackendUrl);
 
-      // 2. Upload PDFs to Server Batch Storage (concurrent chunk batch upload)
-      let uploadedCount = 0;
-      const uploadConcurrency = 3;
-      
-      const uploadSingleFile = async (fileInfo) => {
-        if (state.stopRequested) return;
-        const formData = new FormData();
-        formData.append("job_id", jobId);
-        formData.append("file", fileInfo.fileObject);
+    if (useServerBatch) {
+      try {
+        setStatus("Initializing Server Batch Job...");
+        const createRes = await fetchWithRetry("/api/batch/create", { method: "POST" }, 2);
+        const createData = await createRes.json();
         
-        try {
-          const upRes = await fetchWithRetry("/api/batch/upload-file", { method: "POST", body: formData }, 2);
-          const upData = await upRes.json();
-          if (!upData.success) {
-            console.warn("Upload file warning:", fileInfo.filename, upData.error);
-          }
-        } catch (e) {
-          console.warn("Upload exception for:", fileInfo.filename, e);
-        } finally {
-          uploadedCount++;
-          setStatus(`Uploading files to server batch queue: ${uploadedCount}/${totalFiles} complete...`);
-        }
-      };
-
-      for (let i = 0; i < totalFiles; i += uploadConcurrency) {
-        if (state.stopRequested) break;
-        const chunk = state.eligibleFiles.slice(i, i + uploadConcurrency);
-        await Promise.all(chunk.map(uploadSingleFile));
-      }
-
-      if (state.stopRequested) {
-        setStatus("Batch processing cancelled before start.");
-        state.isProcessing = false;
-        btnStartOcr.disabled = false;
-        btnCheckDuplicates.disabled = false;
-        btnStopOcr.disabled = true;
-        return;
-      }
-
-      // 3. Start Server-Side Batch Processing Worker
-      setStatus("Starting Server Batch Worker Engine...");
-      await fetchWithRetry("/api/batch/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: jobId, ocr_language: selectedLang })
-      }, 2);
-
-      // 4. Poll Server Progress Loop
-      while (state.isProcessing && !state.stopRequested) {
-        const statusRes = await fetch(`/api/batch/status/${jobId}`);
-        const statusResData = await statusRes.json();
-        const sData = statusResData.status_data || {};
-
-        if (sData.status) {
-          state.processedPagesCount = sData.processed_pages || 0;
-          state.totalPagesCount = sData.total_pages || state.totalPagesCount;
+        if (createData.success && createData.job_id) {
+          const jobId = createData.job_id;
+          let uploadedCount = 0;
+          const uploadConcurrency = 3;
           
-          if (lblCurrentPdf) lblCurrentPdf.textContent = sData.current_pdf || "Processing...";
-          if (lblCurrentPage) lblCurrentPage.textContent = `Page ${sData.current_page || 1} / ${sData.total_pages || 1}`;
-
-          updateBatchProgress(sData.completed_pdfs || 0, totalFiles);
-          updatePdfProgress(sData.current_page || 1, sData.total_pages || 1, `Server OCR: ${sData.current_pdf} (Page ${sData.current_page})`);
-
-          // Update table rows from server file statuses
-          if (sData.files) {
-            state.eligibleFiles.forEach(f => {
-              const serverF = sData.files[f.filename];
-              if (serverF) {
-                f.ocr_status = serverF.status;
-                if (serverF.extracted_text) {
-                  f.extractedText = serverF.extracted_text;
-                }
-              }
-            });
-            renderReviewTable();
-            updateLiveCounters();
-          }
-
-          if (sData.status === "COMPLETED") {
-            break;
-          }
-        }
-        await new Promise(r => setTimeout(r, 1000));
-      }
-
-      // 5. Retrieve Final Batch Result
-      const resultRes = await fetch(`/api/batch/result/${jobId}`);
-      const resultData = await resultRes.json();
-
-      if (resultData.success) {
-        state.processedResults = [];
-        if (resultData.files) {
-          Object.values(resultData.files).forEach(f => {
-            if (f.extracted_text) {
-              state.processedResults.push({
-                filename: f.filename,
-                text: f.extracted_text
-              });
+          const uploadSingleFile = async (fileInfo) => {
+            if (state.stopRequested) return;
+            const formData = new FormData();
+            formData.append("job_id", jobId);
+            formData.append("file", fileInfo.fileObject);
+            try {
+              await fetchWithRetry("/api/batch/upload-file", { method: "POST", body: formData }, 2);
+            } catch (e) {
+              console.warn("Upload exception for:", fileInfo.filename, e);
+            } finally {
+              uploadedCount++;
+              setStatus(`Uploading files to server batch queue: ${uploadedCount}/${totalFiles} complete...`);
             }
-          });
+          };
+
+          for (let i = 0; i < totalFiles; i += uploadConcurrency) {
+            if (state.stopRequested) break;
+            const chunk = state.eligibleFiles.slice(i, i + uploadConcurrency);
+            await Promise.all(chunk.map(uploadSingleFile));
+          }
+
+          if (!state.stopRequested) {
+            setStatus("Starting Server Batch Worker Engine...");
+            await fetchWithRetry("/api/batch/start", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ job_id: jobId, ocr_language: selectedLang })
+            }, 2);
+
+            let pollAttempts = 0;
+            while (state.isProcessing && !state.stopRequested) {
+              const statusRes = await fetch(`/api/batch/status/${jobId}`);
+              const statusResData = await statusRes.json();
+              const sData = statusResData.status_data || {};
+
+              if (sData.status) {
+                state.processedPagesCount = sData.processed_pages || 0;
+                state.totalPagesCount = sData.total_pages || state.totalPagesCount;
+                
+                if (lblCurrentPdf) lblCurrentPdf.textContent = sData.current_pdf || "Processing...";
+                if (lblCurrentPage) lblCurrentPage.textContent = `Page ${sData.current_page || 1} / ${sData.total_pages || 1}`;
+
+                updateBatchProgress(sData.completed_pdfs || 0, totalFiles);
+                updatePdfProgress(sData.current_page || 1, sData.total_pages || 1, `Server OCR: ${sData.current_pdf} (Page ${sData.current_page})`);
+
+                if (sData.files) {
+                  state.eligibleFiles.forEach(f => {
+                    const serverF = sData.files[f.filename];
+                    if (serverF) {
+                      f.ocr_status = serverF.status;
+                      if (serverF.extracted_text) f.extractedText = serverF.extracted_text;
+                    }
+                  });
+                  renderReviewTable();
+                  updateLiveCounters();
+                }
+
+                if (sData.status === "COMPLETED") break;
+              }
+              pollAttempts++;
+              if (pollAttempts > 5 && sData.completed_pdfs === 0 && sData.status === "PROCESSING") {
+                // Background thread frozen or serverless context terminated - switch to streaming
+                console.warn("Server batch stalled (likely serverless environment). Switching to live page-by-page streaming...");
+                useServerBatch = false;
+                break;
+              }
+              await new Promise(r => setTimeout(r, 1000));
+            }
+
+            if (useServerBatch) {
+              const resultRes = await fetch(`/api/batch/result/${jobId}`);
+              const resultData = await resultRes.json();
+              if (resultData.success && resultData.files) {
+                state.processedResults = [];
+                Object.values(resultData.files).forEach(f => {
+                  if (f.extracted_text) {
+                    state.processedResults.push({ filename: f.filename, text: f.extracted_text });
+                  }
+                });
+              }
+            }
+          }
+        } else {
+          useServerBatch = false;
         }
+      } catch (err) {
+        console.warn("Server batch initialization failed, switching to live page-by-page streaming:", err);
+        useServerBatch = false;
       }
-
-      if (state.processedResults.length > 0) {
-        btnCombine.disabled = false;
-        setStatus(`Server Batch Complete! Processed ${state.processedResults.length} of ${totalFiles} PDF(s) (${state.processedPagesCount} Pages). Click "COMBINE ALL TEXT" to view/download output.`);
-      } else {
-        setStatus("Processing finished with errors or no results.");
-      }
-
-    } catch (err) {
-      console.error("Batch processing error:", err);
-      setStatus(`Batch Processing Error: ${err.message}`);
-    } finally {
-      state.isProcessing = false;
-      btnStartOcr.disabled = false;
-      btnCheckDuplicates.disabled = false;
-      btnStopOcr.disabled = true;
-      if (lblCurrentPdf) lblCurrentPdf.textContent = state.stopRequested ? "Stopped" : "Batch Complete";
     }
+
+    // Direct Live Hybrid Page-by-Page Streaming Processing (Vercel Serverless & Browser Engine)
+    if (!useServerBatch && !state.stopRequested) {
+      setStatus("Starting Live Streaming OCR Processing...");
+
+      for (let fIdx = 0; fIdx < totalFiles; fIdx++) {
+        if (state.stopRequested) break;
+
+        const fileInfo = state.eligibleFiles[fIdx];
+        if (fileInfo.ocr_status === "SUCCESS" || fileInfo.ocr_status === "COMPLETED") continue;
+
+        fileInfo.ocr_status = "PROCESSING...";
+        renderReviewTable();
+        updateLiveCounters();
+
+        if (lblCurrentPdf) lblCurrentPdf.textContent = fileInfo.filename;
+        updateBatchProgress(fIdx, totalFiles);
+
+        let pdfDoc = null;
+        try {
+          if (window.pdfjsLib && fileInfo.fileObject) {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+            const arrayBuffer = await fileInfo.fileObject.arrayBuffer();
+            const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+            pdfDoc = await loadingTask.promise;
+          }
+        } catch (pdfErr) {
+          console.warn("PDF.js loading failed for", fileInfo.filename, pdfErr);
+        }
+
+        const totalPages = pdfDoc ? pdfDoc.numPages : (typeof fileInfo.page_count === "number" ? fileInfo.page_count : 1);
+        let extractedPagesText = [];
+        let pagesProcessedForFile = 0;
+
+        const pageConcurrency = 2; // Optimal empirically benchmarked web page concurrency
+        for (let pNum = 1; pNum <= totalPages; pNum += pageConcurrency) {
+          if (state.stopRequested) break;
+
+          const batchPageNums = [];
+          for (let c = 0; c < pageConcurrency && (pNum + c) <= totalPages; c++) {
+            batchPageNums.push(pNum + c);
+          }
+
+          if (lblCurrentPage) lblCurrentPage.textContent = `Pages ${batchPageNums.join(", ")} / ${totalPages}`;
+          updatePdfProgress(batchPageNums[batchPageNums.length - 1], totalPages, `Processing '${fileInfo.filename}' (Pages ${batchPageNums.join(", ")}/${totalPages})...`);
+
+          const pageResults = await Promise.all(
+            batchPageNums.map(pn => processPageHybrid(fileInfo.fileObject, pdfDoc, pn, selectedLang).then(res => ({ pageNum: pn, res })))
+          );
+
+          pageResults.sort((a, b) => a.pageNum - b.pageNum);
+
+          for (const item of pageResults) {
+            const pageRes = item.res;
+            const pn = item.pageNum;
+            if (pageRes.success && pageRes.text) {
+              extractedPagesText.push(`--- PAGE ${pn} ---\n${pageRes.text}`);
+            } else {
+              extractedPagesText.push(`--- PAGE ${pn} ---\n[WARNING: ${pageRes.message || "No text extracted."}]`);
+            }
+            pagesProcessedForFile++;
+            state.processedPagesCount++;
+          }
+
+          updateLiveCounters();
+        }
+
+        const fullText = extractedPagesText.join("\n\n").trim();
+        fileInfo.extractedText = fullText;
+
+        if (fullText.length > 50 && !fullText.includes("[ERROR]")) {
+          fileInfo.ocr_status = "SUCCESS";
+          state.processedResults.push({ filename: fileInfo.filename, text: fullText });
+        } else if (fullText.length > 0) {
+          fileInfo.ocr_status = "NEEDS REVIEW";
+        } else {
+          fileInfo.ocr_status = "FAILED";
+        }
+
+        renderReviewTable();
+        updateLiveCounters();
+        updateBatchProgress(fIdx + 1, totalFiles);
+      }
+    }
+
+    if (state.processedResults.length > 0) {
+      btnCombine.disabled = false;
+      setStatus(`Batch Complete! Processed ${state.processedResults.length} of ${totalFiles} PDF(s) (${state.processedPagesCount} Pages). Click "COMBINE ALL TEXT" to view/download output.`);
+    } else if (state.stopRequested) {
+      setStatus("Processing stopped by user.");
+    } else {
+      setStatus("Processing finished with errors or no results.");
+    }
+
+    state.isProcessing = false;
+    btnStartOcr.disabled = false;
+    btnCheckDuplicates.disabled = false;
+    btnStopOcr.disabled = true;
+    if (lblCurrentPdf) lblCurrentPdf.textContent = state.stopRequested ? "Stopped" : "Batch Complete";
   });
 
   // Retry Failed PDFs Button Event Listener

@@ -77,19 +77,17 @@ def is_image_blank(pil_image, threshold_pct=0.1):
     """Check if rendered PIL Image is blank/corrupt by measuring dark ink pixel percentage (< 240 threshold).
     
     Returns True if dark pixel percentage is below threshold_pct (default 0.1%).
+    Uses fast C-level histogram calculation for zero-overhead performance.
     """
     if pil_image is None:
         return True
     try:
         gray = pil_image.convert("L")
-        if hasattr(gray, "get_flattened_data"):
-            pixels = gray.get_flattened_data()
-        else:
-            pixels = gray.getdata()
-        total_pixels = len(pixels)
+        hist = gray.histogram()
+        total_pixels = sum(hist)
         if total_pixels == 0:
             return True
-        dark_pixels = sum(1 for p in pixels if p < 240)
+        dark_pixels = sum(hist[:240])
         pct = (dark_pixels / total_pixels) * 100
         return pct < threshold_pct
     except Exception:
