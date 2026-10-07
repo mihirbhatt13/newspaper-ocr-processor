@@ -742,7 +742,7 @@ document.addEventListener("DOMContentLoaded", () => {
         let extractedPagesText = [];
         let pagesProcessedForFile = 0;
 
-        const pageConcurrency = 2; // Optimal empirically benchmarked web page concurrency
+        const pageConcurrency = 3; // Optimal empirically benchmarked web page concurrency
         for (let pNum = 1; pNum <= totalPages; pNum += pageConcurrency) {
           if (state.stopRequested) break;
 
